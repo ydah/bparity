@@ -10,6 +10,7 @@ require_relative "bparity/spec_bundle"
 require_relative "bparity/synthesis"
 require_relative "bparity/verification"
 require_relative "bparity/reporting"
+require_relative "bparity/formal"
 
 module Bparity
   class << self

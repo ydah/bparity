@@ -4,6 +4,47 @@ require "prism"
 
 module Bparity
   module Synthesis
+    class InvariantMiner
+      def mine(records)
+        successful = records.filter_map do |record|
+          outcome = record["outcome"]
+          outcome["value"] if outcome&.fetch("kind", nil) == "return"
+        end
+        return [] if successful.length < 2
+
+        candidates(successful).map.with_index(1) do |expression, index|
+          { "id" => format("inv-%04d", index), "expr" => expression, "support" => successful.length,
+            "confidence" => 1.0, "provenance_level" => "B", "formal_level" => "F0" }
+        end
+      end
+
+      private
+
+      def candidates(values)
+        items = []
+        items << "return != nil" if values.none?(&:nil?)
+        classes = values.map(&:class).uniq
+        items << "return.is_a?(#{classes.first})" if classes.one? && %w[String Integer Array
+                                                                        Hash].include?(classes.first.name)
+        if values.all? { |value| value.is_a?(String) && value.match?(/\A[a-z0-9-]*\z/) }
+          items << "return.match?(/\\A[a-z0-9-]*\\z/)"
+        end
+        items
+      end
+    end
+
+    class MetamorphicDetector
+      def detect(callable, samples)
+        relations = []
+        relations << "idempotent" if samples.all? do |sample|
+          callable.call(callable.call(sample)) == callable.call(sample)
+        end
+        relations
+      rescue StandardError
+        []
+      end
+    end
+
     class StaticExtractor
       SPEC_CALLS = %i[describe context it specify].freeze
       ASSERTIONS = %i[eq eql equal raise_error assert assert_equal assert_raises].freeze
@@ -83,6 +124,7 @@ module Bparity
         @records = records
         @static_examples = static_examples
         @source_facts = source_facts
+        @invariant_miner = InvariantMiner.new
       end
 
       def call
@@ -107,7 +149,18 @@ module Bparity
 
       def operations(records)
         records.group_by { |record| record["operation"] }.map do |name, calls|
-          { "name" => name, "examples" => calls.map { |call| example(call) } }
+          { "name" => name, "params" => params(calls), "examples" => calls.map { |call| example(call) },
+            "invariants" => @invariant_miner.mine(calls) }
+        end
+      end
+
+      def params(calls)
+        count = calls.map { |call| call.fetch("args", []).length }.max || 0
+        count.times.map do |index|
+          observed = calls.filter { |call| call.fetch("args", []).length > index }
+                          .map { |call| Recording::Serializer.load(call.fetch("args")[index]) }
+          { "name" => "arg#{index}", "types" => observed.map { |value| value.class.name }.uniq,
+            "observed_values" => observed.uniq }
         end
       end
 

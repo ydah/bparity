@@ -33,4 +33,13 @@ RSpec.describe Bparity::Synthesis do
     example = bundle.dig("subjects", 0, "operations", 0, "examples", 0)
     expect(example).to include("provenance_level" => "A", "formal_level" => "F0")
   end
+
+  it "mines supported nontrivial invariants from repeated observations" do
+    records = %w[one two].map do |value|
+      { "outcome" => { "kind" => "return", "value" => value } }
+    end
+
+    expressions = described_class::InvariantMiner.new.mine(records).map { |item| item["expr"] }
+    expect(expressions).to include("return != nil", "return.is_a?(String)", "return.match?(/\\A[a-z0-9-]*\\z/)")
+  end
 end

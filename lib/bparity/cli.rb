@@ -117,6 +117,30 @@ module Bparity
       0
     end
 
+    def command_prove(argv)
+      options = { spec: ".bparity/spec_bundle.yml", adapter: ".bparity/adapter.rb", level: "f2",
+                  size: 3, depth: 2, max_cases: 100_000, timebox: 300, requires: [] }
+      OptionParser.new do |opts|
+        opts.on("--spec PATH") { |value| options[:spec] = value }
+        opts.on("--adapter PATH") { |value| options[:adapter] = value }
+        opts.on("--level LEVEL") { |value| options[:level] = value }
+        opts.on("--scope SCOPE") { |value| parse_scope(value, options) }
+        opts.on("--max-cases N", Integer) { |value| options[:max_cases] = value }
+        opts.on("--timebox SECONDS", Integer) { |value| options[:timebox] = value }
+        opts.on("--require PATH") { |value| options[:requires] << value }
+      end.parse!(argv)
+      unless options[:level] == "f2"
+        raise ConfigurationError, "Formal level #{options[:level]} is not available through this runner. Use f2."
+      end
+
+      options[:requires].each { |path| require File.expand_path(path) }
+      bundle = SpecBundle::Loader.load(options[:spec])
+      load File.expand_path(options[:adapter])
+      result = run_f2(bundle, Bparity.adapter_definition, options)
+      @out.puts(JSON.pretty_generate(result.to_h))
+      result.success? ? 0 : 1
+    end
+
     def command_init(argv)
       options = {}
       OptionParser.new do |opts|
@@ -152,6 +176,55 @@ module Bparity
       end
     rescue LoadError
       raise ConfigurationError, "The #{driver} driver is not installed. Add it to the legacy environment and try again."
+    end
+
+    def run_f2(bundle, adapter, options)
+      spec_subject = bundle.fetch("subjects").first
+      operation_spec = spec_subject.fetch("operations").first
+      binding = adapter.subjects.fetch(spec_subject.fetch("name"))
+      operation = binding.operations.fetch(operation_spec.fetch("name"))
+      old_class = Bparity.constantize(spec_subject.fetch("old_class"))
+      domains = f2_domains(operation_spec, options)
+      method_name = operation_spec.fetch("name").delete_prefix("#")
+      old_callable = ->(*args) { old_class.new.public_send(method_name, *args) }
+      new_callable = ->(*args) { operation.invoke(binding.build({}), args, {}) }
+      runner = build_f2_runner(old_callable, new_callable, domains, operation, options)
+      target = binding.build({})
+      monitored_class = target.is_a?(Module) ? target.singleton_class : target.class
+      result, violations = Formal::Assumptions::WorldFreeze.new([old_class, monitored_class]).check { runner.run }
+      return result if violations.empty?
+
+      Formal::Result.new(level: :f2, verdict: :inconclusive, scope: result.scope,
+                         assumptions: result.assumptions, out_of_scope: result.out_of_scope,
+                         details: { "assumption_violations" => violations })
+    end
+
+    def f2_domains(operation_spec, options)
+      operation_spec.fetch("params", []).map do |param|
+        type = param.fetch("types", ["String"]).first
+        observed = param.fetch("observed_values", [])
+        alphabet = observed.grep(String).flat_map(&:chars).uniq.first(8)
+        Formal::ValueEnumerator.new(size: options[:size], depth: options[:depth],
+                                    alphabet: alphabet.empty? ? %w[a b] : alphabet, observed:).values(type) + [nil]
+      end
+    end
+
+    def build_f2_runner(old_callable, new_callable, domains, operation, options)
+      Formal::ExhaustiveRunner.new(old_callable:, new_callable:, domains:, size: options[:size],
+                                   depth: options[:depth], assumptions: %i[h1 h3 h7],
+                                   max_cases: options[:max_cases], timebox: options[:timebox],
+                                   new_error_mapper: operation.method(:map_error))
+    end
+
+    def parse_scope(value, options)
+      value.split(",").each do |entry|
+        key, number = entry.split("=", 2)
+        raise ConfigurationError, "Invalid scope #{entry}. Use size=N,depth=N." unless %w[size depth].include?(key)
+
+        options[key.to_sym] = Integer(number, 10)
+      end
+    rescue ArgumentError
+      raise ConfigurationError, "Invalid scope #{value}. Use size=N,depth=N."
     end
 
     def write_unless_exists(path, content)

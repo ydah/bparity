@@ -49,6 +49,15 @@ bundle exec bparity verify --require lib/new_slug_service.rb
 
 Reports support `markdown`, `json`, `junit`, and `html`. A changed bundle checksum is rejected; intentional incompatibilities must be declared with `waive` in the adapter.
 
+Run a bounded exhaustive comparison while both implementations are available:
+
+```bash
+bundle exec bparity prove --level f2 --scope size=3,depth=2 \
+  --require lib/legacy.rb --require lib/replacement.rb
+```
+
+The result uses `no_difference_found`, `difference_found`, or `inconclusive`; it always includes the enumerated case count, scope, assumptions, and excluded inputs.
+
 ## Time capsule
 
 Run `bparity init --timecapsule`, vendor endangered gems with `bundle package --all`, and build the generated Dockerfile. Keep the corpus and specification bundle in version control so verification remains possible after the legacy runtime disappears.
