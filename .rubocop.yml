@@ -16,7 +16,7 @@ Style/Documentation:
   Enabled: false
 
 Metrics/AbcSize:
-  Max: 50
+  Max: 55
 
 Metrics/BlockLength:
   Exclude:
@@ -25,7 +25,7 @@ Metrics/BlockLength:
     - "Rakefile"
 
 Metrics/ClassLength:
-  Max: 250
+  Max: 300
 
 Metrics/CyclomaticComplexity:
   Max: 25

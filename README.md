@@ -58,6 +58,15 @@ bundle exec bparity prove --level f2 --scope size=3,depth=2 \
 
 The result uses `no_difference_found`, `difference_found`, or `inconclusive`; it always includes the enumerated case count, scope, assumptions, and excluded inputs.
 
+For a stateful subject with `state` projections in both the boundary and adapter, compare learned finite models:
+
+```bash
+bundle exec bparity prove --level f3 --equivalence trace \
+  --require lib/replacement.rb --export-lts tmp/client
+```
+
+F3 reports both model sizes, the learned alphabet, whether exploration was exact, and the shortest distinguishing sequence. `--counterexample-out spec/f3_counterexample_spec.rb` writes that sequence as a regression example. The claim applies only to the projected models.
+
 ## Time capsule
 
 Run `bparity init --timecapsule`, vendor endangered gems with `bundle package --all`, and build the generated Dockerfile. Keep the corpus and specification bundle in version control so verification remains possible after the legacy runtime disappears.

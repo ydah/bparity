@@ -128,12 +128,14 @@ module Bparity
       end
 
       def call
+        subject_items = subjects
         {
           "spec_bundle_version" => SpecBundle::VERSION,
           "generated_at" => Time.now.utc.iso8601,
           "conformance_mode" => "refinement",
           "verification_assumptions" => ASSUMPTIONS,
-          "subjects" => subjects,
+          "subjects" => subject_items,
+          "lts" => learned_models,
           "gaps" => @source_facts.map { |fact| fact.merge("kind" => "static_only") },
           "waivers" => []
         }
@@ -143,9 +145,23 @@ module Bparity
 
       def subjects
         @records.group_by { |record| record["subject"] }.map do |name, records|
-          { "name" => short_name(name), "old_class" => name, "operations" => operations(records) }
+          item = { "name" => short_name(name), "old_class" => name, "operations" => operations(records) }
+          item["lts_ref"] = lts_id(name) if stateful?(records)
+          item
         end
       end
+
+      def learned_models
+        @records.group_by { |record| record["subject"] }.filter_map do |name, records|
+          next unless stateful?(records)
+
+          Formal::PassiveLearner.new.learn(records).to_h.merge("id" => lts_id(name),
+                                                               "learned_by" => "passive corpus projection")
+        end
+      end
+
+      def stateful?(records) = records.any? { |record| record["pre_state"] || record["post_state"] }
+      def lts_id(name) = "lts-#{short_name(name).downcase}"
 
       def operations(records)
         records.group_by { |record| record["operation"] }.map do |name, calls|
