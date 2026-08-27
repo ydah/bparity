@@ -1,38 +1,69 @@
-# Bparity
+# bparity
 
-TODO: Delete this and the text below, and describe your gem
-
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/bparity`. To experiment with that code, run `bin/console` for an interactive prompt.
+`bparity` captures the observable behavior of a legacy Ruby API, stores it as a portable specification bundle, and checks a structurally different replacement through a small adapter. The legacy dependency is not needed during verification.
 
 ## Installation
 
-TODO: Replace `UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG` with your gem name right after releasing it to RubyGems.org. Please do not do it earlier due to security reasons. Alternatively, replace this section with instructions to install your gem from git if you don't plan to release to RubyGems.org.
-
-Install the gem and add to the application's Gemfile by executing:
-
 ```bash
-bundle add UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
-```
-
-If bundler is not being used to manage dependencies, install the gem by executing:
-
-```bash
-gem install UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+bundle add bparity
 ```
 
 ## Usage
 
-TODO: Write usage instructions here
+Create `.bparity/boundary.rb` in the legacy environment:
+
+```ruby
+Bparity.boundary do
+  observe "Legacy::Slugifier" do
+    methods :call
+  end
+  driver :rspec, files: "spec/**/*_spec.rb"
+end
+```
+
+Record and synthesize a checked specification bundle while the legacy environment still works:
+
+```bash
+bundle exec bparity record --require lib/legacy.rb
+bundle exec bparity synthesize --tests 'spec/**/*_spec.rb' --source 'lib/**/*.rb'
+```
+
+Commit `.bparity/spec_bundle.yml`. In the replacement environment, map its abstract operations to the new API:
+
+```ruby
+Bparity.adapter(spec: ".bparity/spec_bundle.yml") do
+  subject "Slugifier" do
+    construct { NewSlugService }
+    operation "#call" do
+      invoke { |service, args, _kwargs| service.generate(text: args.fetch(0)) }
+    end
+  end
+end
+```
+
+The verification step requires only the bundle, adapter, and replacement:
+
+```bash
+bundle exec bparity verify --require lib/new_slug_service.rb
+```
+
+Reports support `markdown`, `json`, `junit`, and `html`. A changed bundle checksum is rejected; intentional incompatibilities must be declared with `waive` in the adapter.
+
+## Time capsule
+
+Run `bparity init --timecapsule`, vendor endangered gems with `bundle package --all`, and build the generated Dockerfile. Keep the corpus and specification bundle in version control so verification remains possible after the legacy runtime disappears.
+
+## Assurance limits
+
+A successful replay means no difference was found for the recorded examples (F0). It does not prove complete program equivalence. Formal checks always report their bounded scope, assumptions, and unverified areas; solver `unknown` and timeouts are inconclusive, never PASS.
 
 ## Development
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
-
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+After checking out the repository, run `bundle install` and `bundle exec rake`.
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/bparity.
+Bug reports and pull requests are welcome at https://github.com/ydah/bparity.
 
 ## License
 

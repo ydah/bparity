@@ -1,0 +1,58 @@
+plugins:
+  - rubocop-rspec
+
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 3.1
+  Exclude:
+    - ".idea/**/*"
+    - "fixtures/**/*"
+    - "vendor/**/*"
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/Documentation:
+  Enabled: false
+
+Metrics/AbcSize:
+  Max: 40
+
+Metrics/BlockLength:
+  Exclude:
+    - "spec/**/*"
+    - "*.gemspec"
+    - "Rakefile"
+
+Metrics/ClassLength:
+  Max: 200
+
+Metrics/CyclomaticComplexity:
+  Max: 15
+
+Metrics/MethodLength:
+  Max: 35
+
+Metrics/ModuleLength:
+  Max: 250
+
+Metrics/ParameterLists:
+  Max: 12
+
+Metrics/PerceivedComplexity:
+  Max: 15
+
+RSpec/ExampleLength:
+  Max: 30
+
+RSpec/MultipleExpectations:
+  Max: 8
+
+RSpec/SpecFilePathFormat:
+  Enabled: false
+
+RSpec/VariableDefinition:
+  Enabled: false
+
+RSpec/VariableName:
+  Enabled: false
