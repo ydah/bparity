@@ -46,6 +46,12 @@ bundle exec bparity synthesize --coverage .bparity/coverage.json \
   --tests 'spec/**/*_spec.rb' --source 'lib/**/*.rb'
 ```
 
+If the legacy runtime is already unavailable, extract only executable static assertions and mark the missing runtime evidence as a gap:
+
+```bash
+bundle exec bparity synthesize --static-only --tests 'spec/**/*_spec.rb' --source 'lib/**/*.rb'
+```
+
 Commit `.bparity/spec_bundle.yml`. In the replacement environment, map its abstract operations to the new API:
 
 ```ruby
@@ -77,7 +83,8 @@ Run a bounded exhaustive comparison while both implementations are available:
 
 ```bash
 bundle exec bparity prove --level f2 --scope size=3,depth=2 \
-  --require lib/legacy.rb --require lib/replacement.rb
+  --require lib/legacy.rb --require lib/replacement.rb \
+  --counterexample-out spec/f2_counterexample_spec.rb
 ```
 
 The result uses `no_difference_found`, `difference_found`, or `inconclusive`; it always includes the enumerated case count, scope, assumptions, and excluded inputs.
@@ -97,7 +104,8 @@ For an explicitly selected pure Ruby fragment, F4 translates both methods to SMT
 bundle exec bparity prove --level f4 --solver z3 --validate-translation \
   --old-source lib/legacy_math.rb --old-method double \
   --new-source lib/new_math.rb --new-method twice --types Integer \
-  --require lib/legacy_math.rb --require lib/new_math.rb
+  --require lib/legacy_math.rb --require lib/new_math.rb \
+  --counterexample-out spec/f4_counterexample_spec.rb
 ```
 
 Translation validation is mandatory. Unsupported Ruby, a translation mismatch, a missing Z3 executable, `unknown`, and solver failures all produce `inconclusive`, never PASS. The implemented fragment covers pure Integer/Boolean/String expressions and conditionals.

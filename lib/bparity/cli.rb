@@ -24,6 +24,12 @@ module Bparity
     rescue OptionParser::ParseError, Error => e
       @err.puts("Error: #{e.message}")
       2
+    rescue LoadError, SystemCallError => e
+      @err.puts("Error: #{e.message}. Check the path and permissions, then try again.")
+      2
+    rescue KeyError => e
+      @err.puts("Error: missing configuration entry #{e.key.inspect}. Regenerate the bundle or update the adapter.")
+      2
     rescue NoMethodError => e
       raise unless e.name.to_s.start_with?("command_")
 
@@ -49,13 +55,14 @@ module Bparity
       load File.expand_path(options[:boundary])
       boundary = Bparity.boundary_definition || raise(ConfigurationError,
                                                       "The boundary file did not call Bparity.boundary.")
-      srand(boundary.canonicalization[:random_seed]) if boundary.canonicalization[:random_seed]
+      Recording::Determinism.apply(boundary.canonicalization)
       options[:requires].each { |path| require File.expand_path(path) }
       writer = Corpus::Writer.new(options[:out])
       Recording::Recorder.new(boundary:, writer:).install!
       run_driver(options[:driver] || boundary.driver_config&.fetch(:name, nil), argv, boundary)
     ensure
       writer&.close
+      Recording::Determinism.clear
       Recording::CoverageTracker.finish(options[:coverage]) if coverage_started && options&.fetch(:coverage, nil)
     end
 
@@ -68,11 +75,16 @@ module Bparity
         opts.on("--tests GLOB") { |value| options[:tests].concat(Dir.glob(value)) }
         opts.on("--source GLOB") { |value| options[:source].concat(Dir.glob(value)) }
         opts.on("--coverage PATH") { |value| options[:coverage] = value }
+        opts.on("--static-only") { options[:static_only] = true }
       end.parse!(argv)
       extractor = Synthesis::StaticExtractor.new
       facts = extractor.extract_source(options[:source])
-      facts.concat(Recording::CoverageTracker.gaps(options[:coverage])) if options[:coverage]
-      bundle = Synthesis::Synthesizer.new(records: Corpus::Reader.new(options[:corpus]).to_a,
+      if options[:coverage]
+        facts.concat(Recording::CoverageTracker.gaps(options[:coverage],
+                                                     source_paths: options[:source]))
+      end
+      records = options[:static_only] ? [] : Corpus::Reader.new(options[:corpus]).to_a
+      bundle = Synthesis::Synthesizer.new(records:,
                                           static_examples: extractor.extract_tests(options[:tests]),
                                           source_facts: facts).call
       SpecBundle::Writer.write(options[:out], bundle)
@@ -90,6 +102,10 @@ module Bparity
         opts.on("--out PATH") { |value| options[:out] = value }
         opts.on("--require PATH") { |value| require File.expand_path(value) }
       end.parse!(argv)
+      unless Reporting::Reporter::FORMATS.include?(options[:format])
+        raise ConfigurationError,
+              "Unknown report format #{options[:format]}. Use markdown, json, junit, or html."
+      end
       bundle = SpecBundle::Loader.load(options[:spec])
       load File.expand_path(options[:adapter])
       adapter = Bparity.adapter_definition || raise(ConfigurationError,
@@ -97,7 +113,12 @@ module Bparity
       runner = Verification::Runner.new(bundle:, adapter:, mode: options[:mode])
       results = runner.run
       report = Reporting::Reporter.new(results, bundle:).public_send(options[:format])
-      options[:out] ? File.write(options[:out], report) : @out.puts(report)
+      if options[:out]
+        FileUtils.mkdir_p(File.dirname(options[:out]))
+        File.write(options[:out], report)
+      else
+        @out.puts(report)
+      end
       runner.success? ? 0 : 1
     end
 
@@ -169,7 +190,7 @@ module Bparity
       results = Verification::Runner.new(bundle:, adapter:).run
       mutation = options[:mutant] ? Adequacy::MutantBridge.new.run : nil
       @out.puts(JSON.pretty_generate(Adequacy::Analyzer.new(bundle:, results:, mutation:).call))
-      0
+      results.none? { |result| result.status == :fail } ? 0 : 1
     end
 
     def command_init(argv)

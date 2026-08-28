@@ -125,7 +125,8 @@ module Bparity
 
         LtsEncoding.output("kind" => "return", "value" => Recording::Serializer.dump(value))
       rescue StandardError => e
-        LtsEncoding.output("kind" => "raise", "class" => e.class.name, "message" => e.message)
+        LtsEncoding.output("kind" => "raise", "class" => e.class.name,
+                           "message" => Bparity.exception_message(e))
       end
 
       def state_label(subject) = JSON.generate(Recording::Serializer.dump(@state_projection.call(subject)))

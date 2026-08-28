@@ -9,7 +9,7 @@ module Bparity
       CONSTANTS = { "Array" => Array, "Hash" => Hash, "String" => String, "Integer" => Integer,
                     "Float" => Float, "Symbol" => Symbol, "NilClass" => NilClass }.freeze
       CALLS = %i[== != > >= < <= + - * / % [] size length nil? empty? is_a? between? match?
-                 start_with? end_with? include? uniq sort].freeze
+                 start_with? end_with? include? uniq sort strip !].freeze
 
       def compile(expression)
         source = expression.gsub(/\breturn\b/, "result")

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "date"
+
 module Bparity
   module Adapter
     Operation = Struct.new(:name, :invoker, :return_mapper, :error_mapper, keyword_init: true) do
@@ -12,7 +14,7 @@ module Bparity
       def map_return(value) = return_mapper ? return_mapper.call(value) : value
 
       def map_error(error)
-        error_mapper ? error_mapper.call(error) : { class: error.class.name, message: error.message }
+        error_mapper ? error_mapper.call(error) : { class: error.class.name, message: Bparity.exception_message(error) }
       end
     end
 
@@ -86,6 +88,19 @@ module Bparity
       end
 
       def waive(id, reason:, approved_by:, approved_at:)
+        values = { "id" => id, "reason" => reason, "approved_by" => approved_by, "approved_at" => approved_at }
+        missing = values.filter_map { |name, value| name if value.to_s.strip.empty? }
+        unless missing.empty?
+          raise ConfigurationError,
+                "Waiver metadata is missing #{missing.join(', ')}. Add an ID, reason, approver, and approval date."
+        end
+        begin
+          Date.iso8601(approved_at.to_s)
+        rescue Date::Error
+          raise ConfigurationError,
+                "Waiver #{id} has an invalid approval date. Use YYYY-MM-DD."
+        end
+
         waivers[id] = Waiver.new(id:, reason:, approved_by:, approved_at:)
       end
 

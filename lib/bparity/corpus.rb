@@ -11,7 +11,7 @@ module Bparity
       def initialize(path)
         @path = path
         FileUtils.mkdir_p(File.dirname(path))
-        @io = File.open(path, "a")
+        @io = File.open(path, "w")
       end
 
       def write(record)
@@ -37,6 +37,8 @@ module Bparity
         rescue JSON::ParserError => e
           raise Error, "Invalid JSONL at #{@path}:#{number}: #{e.message}. Record the corpus again."
         end
+      rescue Errno::ENOENT
+        raise Error, "Cannot read corpus #{@path}. Run `bparity record` first."
       end
     end
   end

@@ -73,14 +73,17 @@ RSpec.describe Bparity::Formal do
       result = described_class.new(old_callable: ->(value) { value * 2 }, new_callable: ->(value) { value + 1 },
                                    domains: [[0, 1]], size: 1, depth: 1, assumptions: %i[h1]).run
       expect(result.to_h).to include("verdict" => "difference_found",
-                                     "counterexample" => include("input" => [0]))
+                                     "counterexample" => include("input" => [0]),
+                                     "scope" => include("exhaustive" => false),
+                                     "details" => include("domains" => [{ "count" => 2, "sample" => [0, 1] }]))
     end
 
     it "is inconclusive rather than exhaustive when the case limit is reached" do
       result = described_class.new(old_callable: ->(value) { value }, new_callable: ->(value) { value },
                                    domains: [[1, 2, 3]], size: 1, depth: 1, assumptions: %i[h1], max_cases: 1).run
       expect(result.to_h).to include("verdict" => "inconclusive",
-                                     "scope" => include("exhaustive" => false))
+                                     "scope" => include("exhaustive" => false),
+                                     "details" => include("fallback" => "pairwise", "fallback_cases" => 1))
     end
   end
 end

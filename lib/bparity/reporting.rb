@@ -33,6 +33,8 @@ module Bparity
     end
 
     class Reporter
+      FORMATS = %w[markdown json junit html].freeze
+
       def initialize(results, bundle: nil)
         @results = results
         @bundle = bundle
@@ -56,6 +58,10 @@ module Bparity
                  "FAIL: #{data['fail']} | WAIVED: #{data['waived']}", ""]
         @results.each do |result|
           lines << "- **#{result.status.to_s.upcase}** `#{result.id}` #{result.description}"
+          if result.waiver
+            lines << "  - Waiver: #{result.waiver.reason} " \
+                     "(approved by #{result.waiver.approved_by} on #{result.waiver.approved_at})"
+          end
           result.differences.each do |difference|
             lines << "  - `#{difference['path']}` expected `#{difference['expected'].inspect}`, " \
                      "got `#{difference['actual'].inspect}`"

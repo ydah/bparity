@@ -64,7 +64,7 @@ RSpec.describe Bparity::CLI do
       waived = run_cli("verify", "--spec", spec, "--adapter", "#{base}/adapter.rb",
                        "--require", "#{base}/replacement/broken.rb")
       expect(waived.last).to be_success
-      expect(waived.first).to include("WAIVED")
+      expect(waived.first).to include("WAIVED", "approved by migration-owner on 2026-08-28")
     end
   end
 
@@ -83,9 +83,12 @@ RSpec.describe Bparity::CLI do
                         "--require", "#{base}/replacement/good.rb")
       f2_broken = run_cli("prove", "--level", "f2", "--scope", "size=2,depth=1", "--spec", spec,
                           "--adapter", "#{base}/adapter.rb", "--require", "#{base}/legacy/turnstile.rb",
-                          "--require", "#{base}/replacement/formal_broken.rb")
+                          "--require", "#{base}/replacement/formal_broken.rb", "--counterexample-out",
+                          File.join(directory, "f2_counterexample_spec.rb"))
       expect(f2_good.first).to include('"verdict": "no_difference_found"')
       expect(f2_broken.first).to include('"verdict": "difference_found"')
+      expect(File.read(File.join(directory, "f2_counterexample_spec.rb"))).to include("F2 counterexample",
+                                                                                      "expect(actual).to eq")
 
       f4_broken = run_cli("prove", "--level", "f4", "--validate-translation", "--types", "Integer",
                           "--spec", spec, "--adapter", "#{base}/adapter.rb",

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "prism"
+require "digest"
 
 module Bparity
   module Synthesis
@@ -48,6 +49,7 @@ module Bparity
     class StaticExtractor
       SPEC_CALLS = %i[describe context it specify].freeze
       ASSERTIONS = %i[eq eql equal raise_error assert assert_equal assert_raises].freeze
+      UNSUPPORTED = Object.new.freeze
 
       def extract_tests(paths)
         Array(paths).flat_map { |path| extract_test_file(path) }
@@ -58,12 +60,7 @@ module Bparity
           result = Prism.parse_file(path)
           raise Error, "Cannot parse #{path}. Fix its Ruby syntax and try again." unless result.success?
 
-          nodes(result.value).filter_map do |node|
-            next unless node.type == :call_node && node.name == :raise
-
-            { "kind" => "guard", "location" => "#{path}:#{node.location.start_line}",
-              "source" => node.location.slice }
-          end
+          source_facts(result.value, path)
         end
       end
 
@@ -73,7 +70,70 @@ module Bparity
         result = Prism.parse_file(path)
         raise Error, "Cannot parse #{path}. Fix its Ruby syntax and try again." unless result.success?
 
-        extract_spec_nodes(result.value, path, [])
+        extract_spec_nodes(result.value, path, []) + extract_minitest_nodes(result.value, path)
+      end
+
+      def extract_minitest_nodes(node, path, owner = nil)
+        owner = node.constant_path.location.slice if node.type == :class_node
+        item = minitest_item(node, path, owner) if node.type == :def_node && node.name.to_s.start_with?("test_")
+        [item, *node.compact_child_nodes.flat_map { |child| extract_minitest_nodes(child, path, owner) }].compact
+      end
+
+      def minitest_item(node, path, owner)
+        assertions = nodes(node.body).filter_map do |child|
+          child.name.to_s if child.type == :call_node && ASSERTIONS.include?(child.name)
+        end.uniq
+        description = node.name.to_s.delete_prefix("test_").tr("_", " ")
+        { "subject" => owner, "description" => [owner, description].compact.join(" "),
+          "location" => "#{path}:#{node.location.start_line}", "assertions" => assertions }
+          .merge(extract_minitest_expectation(node.body) || {})
+      end
+
+      def extract_minitest_expectation(body)
+        nodes(body).filter_map { |node| minitest_expectation(node) }.first
+      end
+
+      def minitest_expectation(node)
+        return unless minitest_assertion?(node)
+
+        expected, invocation = minitest_parts(node)
+        return unless expected && invocation&.type == :call_node
+
+        arguments = invocation.arguments&.arguments || []
+        values = arguments.map { |argument| static_literal(argument) }
+        return if values.any? { |value| value.equal?(UNSUPPORTED) }
+
+        { "subject" => invocation_subject(invocation), "operation" => "##{invocation.name}",
+          "arguments" => values, "expected_outcome" => expected }
+      end
+
+      def minitest_assertion?(node)
+        node.type == :call_node && %i[assert_equal assert_raises].include?(node.name)
+      end
+
+      def minitest_parts(node)
+        arguments = node.arguments&.arguments || []
+        return [static_outcome_for(arguments.first), arguments.at(1)] if node.name == :assert_equal
+
+        [{ "kind" => "raise", "class" => arguments.first&.location&.slice }, block_call(node)]
+      end
+
+      def static_outcome_for(node)
+        value = node && static_literal(node)
+        return if value.equal?(UNSUPPORTED)
+
+        { "kind" => "return", "value" => Recording::Serializer.dump(value) }
+      end
+
+      def block_call(node)
+        body = node.block&.body
+        body&.type == :statements_node ? body.body.last : body
+      end
+
+      def invocation_subject(invocation)
+        receiver = invocation.receiver
+        receiver = receiver.receiver if receiver&.type == :call_node && receiver.name == :new
+        receiver&.location&.slice
       end
 
       def extract_spec_nodes(node, path, context)
@@ -93,8 +153,73 @@ module Bparity
         assertions = nodes(node.block.body).filter_map do |child|
           child.name.to_s if child.type == :call_node && ASSERTIONS.include?(child.name)
         end.uniq
-        { "description" => context.join(" "), "location" => "#{path}:#{node.location.start_line}",
-          "assertions" => assertions }
+        { "subject" => context.first, "description" => context.join(" "),
+          "location" => "#{path}:#{node.location.start_line}", "assertions" => assertions }
+          .merge(extract_expectation(node.block.body) || {})
+      end
+
+      def extract_expectation(body)
+        nodes(body).filter_map { |node| expectation(node) }.first
+      end
+
+      def expectation(node)
+        return unless rspec_expectation?(node)
+
+        expect_call = node.receiver
+        matcher = node.arguments&.arguments&.first
+        return unless matcher&.type == :call_node
+
+        invocation = expected_invocation(expect_call)
+        return unless invocation&.type == :call_node
+
+        arguments = invocation.arguments&.arguments || []
+        values = arguments.map { |argument| static_literal(argument) }
+        return if values.any? { |value| value.equal?(UNSUPPORTED) }
+
+        outcome = static_outcome(matcher)
+        return unless outcome
+
+        { "operation" => "##{invocation.name}", "arguments" => values, "expected_outcome" => outcome }
+      end
+
+      def rspec_expectation?(node)
+        node.type == :call_node && node.name == :to && node.receiver&.type == :call_node &&
+          node.receiver.name == :expect
+      end
+
+      def expected_invocation(expect_call)
+        direct = expect_call.arguments&.arguments&.first
+        return direct if direct
+
+        body = expect_call.block&.body
+        body&.type == :statements_node ? body.body.last : body
+      end
+
+      def static_literal(node)
+        case node.type
+        when :string_node then node.unescaped
+        when :integer_node, :float_node then node.value
+        when :nil_node then nil
+        when :true_node then true
+        when :false_node then false
+        when :symbol_node then node.unescaped.to_sym
+        else UNSUPPORTED
+        end
+      end
+
+      def static_outcome(matcher)
+        argument = matcher.arguments&.arguments&.first
+        case matcher.name
+        when :eq, :eql, :equal
+          value = argument && static_literal(argument)
+          return if value.equal?(UNSUPPORTED)
+
+          { "kind" => "return", "value" => Recording::Serializer.dump(value) }
+        when :raise_error
+          return unless argument
+
+          { "kind" => "raise", "class" => argument.location.slice }
+        end
       end
 
       def nodes(root, &block)
@@ -102,6 +227,45 @@ module Bparity
 
         yield root
         root.compact_child_nodes.each { |child| nodes(child, &block) }
+      end
+
+      def source_facts(node, path, owner = nil, method_name = nil, parameters = [])
+        return [] unless node
+
+        owner = source_owner(node, owner)
+        if node.type == :def_node
+          method_name = node.name
+          parameters = node.parameters ? node.parameters.requireds.map(&:name) : []
+        end
+        fact = guard_fact(node, path, owner, method_name, parameters)
+        [fact, *node.compact_child_nodes.flat_map do |child|
+          source_facts(child, path, owner, method_name, parameters)
+        end].compact
+      end
+
+      def source_owner(node, owner)
+        return owner unless %i[class_node module_node].include?(node.type)
+
+        name = node.constant_path.location.slice
+        name.include?("::") ? name : [owner, name].compact.join("::")
+      end
+
+      def guard_fact(node, path, owner, method_name, parameters)
+        return unless node.type == :if_node && method_name && contains_raise?(node.statements)
+
+        predicate = node.predicate.location.slice
+        parameters.each_with_index do |name, index|
+          predicate = predicate.gsub(/\b#{Regexp.escape(name.to_s)}\b/, "args[#{index}]")
+        end
+        keyword = node.if_keyword_loc&.slice
+        expression = keyword == "unless" ? predicate : "!(#{predicate})"
+        { "kind" => "precondition", "owner" => owner, "operation" => "##{method_name}",
+          "expr" => expression, "location" => "#{path}:#{node.location.start_line}",
+          "source" => node.location.slice }
+      end
+
+      def contains_raise?(node)
+        node && nodes(node).any? { |child| child.type == :call_node && child.name == :raise }
       end
 
       def literal(node)
@@ -137,7 +301,8 @@ module Bparity
           "verification_assumptions" => ASSUMPTIONS,
           "subjects" => subject_items,
           "lts" => learned_models,
-          "gaps" => @source_facts.map { |fact| fact.merge("kind" => "static_only") },
+          "static_facts" => @source_facts.reject { |fact| fact["kind"] == "uncovered_branch" },
+          "gaps" => synthesis_gaps,
           "waivers" => []
         }
       end
@@ -145,11 +310,57 @@ module Bparity
       private
 
       def subjects
-        @records.group_by { |record| record["subject"] }.map do |name, records|
-          item = { "name" => short_name(name), "old_class" => name, "operations" => operations(records) }
+        recorded = @records.group_by { |record| record["subject"] }.map do |name, records|
+          item = { "name" => short_name(name), "old_class" => name, "operations" => operations(name, records) }
           item["lts_ref"] = lts_id(name) if stateful?(records)
           item
         end
+        recorded + static_subjects(recorded.map { |subject| subject["old_class"] })
+      end
+
+      def static_subjects(recorded_names)
+        executable = @static_examples.select { |example| example["operation"] && example["subject"] }
+        executable.group_by { |example| example["subject"] }.filter_map do |name, examples|
+          next if recorded_names.include?(name)
+
+          { "name" => short_name(name), "old_class" => name, "operations" => static_operations(examples) }
+        end
+      end
+
+      def static_operations(examples)
+        examples.group_by { |example| example.fetch("operation") }.map do |name, operation_examples|
+          { "name" => name,
+            "params" => static_params(operation_examples),
+            "preconditions" => [], "invariants" => [],
+            "examples" => operation_examples.map { |example| static_example(example) } }
+        end
+      end
+
+      def static_params(examples)
+        count = examples.map { |example| example.fetch("arguments").length }.max || 0
+        count.times.map do |index|
+          values = examples.select { |example| example.fetch("arguments").length > index }
+                           .map { |example| example.fetch("arguments")[index] }
+          { "name" => "arg#{index}", "types" => values.map { |value| value.class.name }.uniq,
+            "observed_values" => values.uniq }
+        end
+      end
+
+      def static_example(example)
+        digest = Digest::SHA256.hexdigest(example.values_at("location", "description", "operation").join("\0"))[0, 12]
+        { "id" => "static-#{digest}", "provenance_level" => "C", "formal_level" => "F0",
+          "provenance" => example.slice("description", "location").merge("derived_from" => ["static_assertion"]),
+          "given" => { "args" => Recording::Serializer.dump(example.fetch("arguments")),
+                       "kwargs" => Recording::Serializer.dump({}), "block_given" => false },
+          "expect" => { "outcome" => example.fetch("expected_outcome") } }
+      end
+
+      def synthesis_gaps
+        gaps = @source_facts.select { |fact| fact["kind"] == "uncovered_branch" }
+        return gaps unless @records.empty?
+
+        gaps + [{ "kind" => "no_runtime_recording",
+                  "note" => "Only static assertions were extracted; unasserted legacy behavior is unknown." }]
       end
 
       def learned_models
@@ -164,11 +375,21 @@ module Bparity
       def stateful?(records) = records.any? { |record| record["pre_state"] || record["post_state"] }
       def lts_id(name) = "lts-#{short_name(name).downcase}"
 
-      def operations(records)
+      def operations(subject_name, records)
         records.group_by { |record| record["operation"] }.map do |name, calls|
           sampled = calls.first(MAX_EXAMPLES_PER_OPERATION)
           { "name" => name, "params" => params(calls), "examples" => sampled.map { |call| example(call) },
-            "invariants" => @invariant_miner.mine(calls) }
+            "preconditions" => preconditions(subject_name, name), "invariants" => @invariant_miner.mine(calls) }
+        end
+      end
+
+      def preconditions(subject_name, operation_name)
+        @source_facts.each_with_index.filter_map do |fact, index|
+          next unless fact["kind"] == "precondition" && fact["owner"] == subject_name &&
+                      fact["operation"] == operation_name
+
+          fact.slice("expr", "location", "source").merge("id" => format("pre-%04d", index + 1),
+                                                         "provenance_level" => "C", "formal_level" => "F1")
         end
       end
 

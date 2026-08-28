@@ -4,6 +4,7 @@ require "digest"
 require "fileutils"
 require "time"
 require "coverage"
+require "date"
 
 module Bparity
   module Recording
@@ -22,23 +23,36 @@ module Bparity
     module Serializer
       module_function
 
-      def dump(value, projections: {})
+      def dump(value, projections: {}, seen: nil)
+        seen ||= {}.compare_by_identity
         projection = projections[value.class.name]
-        return dump(projection.call(value), projections:) if projection
+        if projection
+          return { "$unserializable" => value.class.name, "$reason" => "cyclic projection" } if seen.key?(value)
+
+          return dump(projection.call(value), projections:, seen: with_seen(seen, value))
+        end
+
+        if recursive?(value)
+          return { "$unserializable" => value.class.name, "$reason" => "cyclic reference" } if seen.key?(value)
+
+          seen = with_seen(seen, value)
+        end
 
         case value
         when nil, true, false, String, Integer then value
         when Float then value.finite? ? value : { "$float" => value.to_s }
         when Symbol then { "$symbol" => value.to_s }
         when Time then { "$time" => value.utc.iso8601(9) }
-        when Array then value.map { |item| dump(item, projections:) }
+        when Array then value.map { |item| dump(item, projections:, seen:) }
         when Hash
-          { "$hash" => value.map { |key, item| [dump(key, projections:), dump(item, projections:)] } }
+          { "$hash" => value.map do |key, item|
+            [dump(key, projections:, seen:), dump(item, projections:, seen:)]
+          end }
         else
-          dump_object(value, projections)
+          dump_object(value, projections, seen)
         end
       rescue StandardError
-        { "$unserializable" => value.class.name, "$digest" => Digest::SHA256.hexdigest(value.inspect) }
+        { "$unserializable" => value.class.name, "$digest" => safe_digest(value) }
       end
 
       def load(value)
@@ -52,16 +66,42 @@ module Bparity
         value.transform_values { |item| load(item) }
       end
 
-      def dump_object(value, projections)
+      def dump_object(value, projections, seen)
         readers = value.class.public_instance_methods(false).select do |name|
           value.method(name).arity.zero? && !%i[to_s inspect hash].include?(name)
         end
-        attributes = readers.sort.to_h { |name| [name.to_s, dump(value.public_send(name), projections:)] }
+        attributes = readers.sort.to_h do |name|
+          [name.to_s, dump(value.public_send(name), projections:, seen:)]
+        end
         return { "$class" => value.class.name, "$attributes" => attributes } unless attributes.empty?
 
-        { "$unserializable" => value.class.name, "$digest" => Digest::SHA256.hexdigest(value.inspect) }
+        { "$unserializable" => value.class.name, "$digest" => safe_digest(value) }
       end
       private_class_method :dump_object
+
+      def recursive?(value) = value.is_a?(Array) || value.is_a?(Hash) || !primitive?(value)
+      private_class_method :recursive?
+
+      def primitive?(value)
+        value.nil? || value.equal?(true) || value.equal?(false) || value.is_a?(String) || value.is_a?(Numeric) ||
+          value.is_a?(Symbol) || value.is_a?(Time)
+      end
+      private_class_method :primitive?
+
+      def with_seen(seen, value)
+        copy = seen.dup
+        copy.compare_by_identity
+        copy[value] = true
+        copy
+      end
+      private_class_method :with_seen
+
+      def safe_digest(value)
+        Digest::SHA256.hexdigest(value.inspect)
+      rescue Exception # rubocop:disable Lint/RescueException -- this is the terminal serializer fallback
+        Digest::SHA256.hexdigest(value.class.name)
+      end
+      private_class_method :safe_digest
     end
 
     class Canonicalizer
@@ -95,8 +135,59 @@ module Bparity
 
       def canonical_float(value)
         tolerance = @config[:float_tolerance]
+        if tolerance && !tolerance.positive?
+          raise ConfigurationError, "Float tolerance must be positive. Update the boundary configuration."
+        end
+
         tolerance ? (value / tolerance).round * tolerance : value
       end
+    end
+
+    module Determinism
+      TIME_KEY = :bparity_frozen_time
+      RANDOM_KEY = :bparity_previous_random_seed
+
+      module_function
+
+      def apply(config)
+        Thread.current[RANDOM_KEY] = srand(config[:random_seed]) if config[:random_seed]
+        return unless config[:freeze_time]
+
+        install_time_hook
+        install_date_hook
+        Thread.current[TIME_KEY] = Time.parse(config[:freeze_time].to_s)
+      rescue ArgumentError
+        raise ConfigurationError, "Frozen time is invalid. Use an ISO 8601 value in the boundary configuration."
+      end
+
+      def clear
+        Thread.current[TIME_KEY] = nil
+        previous_seed = Thread.current[RANDOM_KEY]
+        srand(previous_seed) if previous_seed
+        Thread.current[RANDOM_KEY] = nil
+      end
+
+      def install_time_hook
+        return if Time.singleton_class.instance_variable_defined?(:@bparity_time_hook)
+
+        key = TIME_KEY
+        Time.singleton_class.prepend(Module.new do
+          define_method(:now) { |*args, **kwargs| Thread.current[key] || super(*args, **kwargs) }
+        end)
+        Time.singleton_class.instance_variable_set(:@bparity_time_hook, true)
+      end
+      private_class_method :install_time_hook
+
+      def install_date_hook
+        return if Date.singleton_class.instance_variable_defined?(:@bparity_date_hook)
+
+        key = TIME_KEY
+        Date.singleton_class.prepend(Module.new do
+          define_method(:today) { Thread.current[key]&.to_date || super() }
+        end)
+        Date.singleton_class.instance_variable_set(:@bparity_date_hook, true)
+      end
+      private_class_method :install_date_hook
     end
 
     module CoverageTracker
@@ -129,8 +220,11 @@ module Bparity
         File.write(path, JSON.pretty_generate("files" => files))
       end
 
-      def gaps(path)
+      def gaps(path, source_paths: [])
+        allowed = source_paths.map { |source| File.expand_path(source) }
         JSON.parse(File.read(path)).fetch("files").flat_map do |file|
+          next [] unless allowed.empty? || allowed.include?(File.expand_path(file.fetch("path")))
+
           file.fetch("branches").filter_map do |branch|
             next unless branch.fetch("count").zero?
 
@@ -200,7 +294,8 @@ module Bparity
       rescue Exception => e # rubocop:disable Lint/RescueException -- recording must preserve every observable exception
         external_calls = Context.external_stack.pop || []
         write(subject, receiver, operation, args, kwargs, before_args, yields, pre_state, block, external_calls,
-              error: { "class" => e.class.name, "message" => e.message, "cause" => e.cause&.class&.name })
+              error: { "class" => e.class.name, "message" => Bparity.exception_message(e),
+                       "cause" => e.cause&.class&.name })
         raise
       end
 
@@ -235,7 +330,7 @@ module Bparity
             Context.append_external({ "target" => external.name, "method" => method_name.to_s,
                                       "args" => Serializer.dump(args), "kwargs" => Serializer.dump(kwargs),
                                       "outcome" => { "kind" => "raise", "class" => e.class.name,
-                                                     "message" => e.message } })
+                                                     "message" => Bparity.exception_message(e) } })
             raise
           end
         end

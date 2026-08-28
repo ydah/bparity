@@ -2,10 +2,11 @@
 
 module Bparity
   module Verification
-    Result = Struct.new(:id, :status, :description, :differences, :provenance, keyword_init: true) do
+    Result = Struct.new(:id, :status, :description, :differences, :provenance, :waiver, keyword_init: true) do
       def to_h
         { "id" => id, "status" => status.to_s.upcase, "description" => description,
-          "differences" => differences, "provenance" => provenance }
+          "differences" => differences, "provenance" => provenance,
+          "waiver" => waiver&.to_h&.transform_keys(&:to_s) }
       end
     end
 
@@ -23,7 +24,7 @@ module Bparity
       end
 
       def hash_diff(expected, actual, path)
-        (expected.keys | actual.keys).sort.flat_map do |key|
+        (expected.keys | actual.keys).sort_by(&:to_s).flat_map do |key|
           if !expected.key?(key) || !actual.key?(key)
             expected_value = expected.fetch(key, MISSING)
             actual_value = actual.fetch(key, MISSING)
@@ -41,7 +42,16 @@ module Bparity
 
       def array_diff(expected, actual, path)
         length = [expected.length, actual.length].max
-        length.times.flat_map { |index| call(expected[index], actual[index], "#{path}[#{index}]") }
+        length.times.flat_map do |index|
+          expected_value = expected.fetch(index, MISSING)
+          actual_value = actual.fetch(index, MISSING)
+          if expected_value.equal?(MISSING) || actual_value.equal?(MISSING)
+            [{ "path" => "#{path}[#{index}]", "expected" => display(expected_value),
+               "actual" => display(actual_value) }]
+          else
+            call(expected_value, actual_value, "#{path}[#{index}]")
+          end
+        end
       end
       private_class_method :array_diff
     end
@@ -59,10 +69,15 @@ module Bparity
       end
 
       def compare(expected, actual)
-        return [] if @mode == :contract
+        if @mode == :contract
+          raise ConfigurationError,
+                "Contract comparison requires operation contracts. Run it through Verification::Runner."
+        end
 
         compare_values(expected, actual)
       end
+
+      def contract? = @mode == :contract
 
       private
 
@@ -94,11 +109,19 @@ module Bparity
         @bundle = bundle
         @adapter = adapter
         @comparator = Comparator.new(mode: mode || bundle.fetch("conformance_mode", "refinement"))
+        @refinement_comparator = Comparator.new(mode: :refinement)
+        @contract_checker = Formal::ContractChecker.new
         @external_probe = ExternalProbe.new(adapter.externals).install!
       end
 
       def run
-        @bundle.fetch("subjects").flat_map { |subject| replay_subject(subject) }
+        results = @bundle.fetch("subjects").flat_map { |subject| replay_subject(subject) }
+        unused = @adapter.waivers.keys - results.map(&:id)
+        unless unused.empty?
+          raise ConfigurationError,
+                "Waiver IDs were not found in the Spec Bundle: #{unused.join(', ')}. Remove or correct them."
+        end
+        results
       end
 
       private
@@ -123,19 +146,24 @@ module Bparity
       def replay_example(binding, subject, operation_spec, example)
         waiver = @adapter.waivers[example["id"]]
         actual = invoke(binding, subject, operation_spec["name"], example.fetch("given"))
-        differences = @comparator.compare(example.fetch("expect"), actual)
+        differences = if @comparator.contract?
+                        contract_differences(operation_spec, example, actual)
+                      else
+                        @comparator.compare(example.fetch("expect"), actual)
+                      end
         status = if differences.empty? then :pass
                  elsif waiver then :waived
                  else :fail
                  end
         Result.new(id: example["id"], status:, description: example.dig("provenance", "description"),
-                   differences:, provenance: example["provenance"])
+                   differences:, provenance: example["provenance"], waiver: status == :waived ? waiver : nil)
       end
 
       def invoke(binding, subject, operation_name, given)
         operation = binding.operations[operation_name] || Adapter::Operation.new(name: operation_name)
         args = Recording::Serializer.load(given.fetch("args", []))
         kwargs = Recording::Serializer.load(given.fetch("kwargs", {}))
+        before_args = Recording::Serializer.dump(args)
         yields = []
         external_calls = @external_probe.capture do
           value = operation.invoke(subject, args, kwargs) { |*items| yields << Recording::Serializer.dump(items) }
@@ -144,17 +172,54 @@ module Bparity
         {
           "outcome" => { "kind" => "return", "value" => external_calls.fetch(:value) },
           "post_state" => Recording::Serializer.dump(binding.state_projection&.call(subject)),
-          "yields" => yields, "external_calls" => external_calls.fetch(:calls), "mutated_args" => []
+          "yields" => yields, "external_calls" => external_calls.fetch(:calls),
+          "mutated_args" => mutated_indices(before_args, Recording::Serializer.dump(args))
         }
       rescue StandardError => e
-        mapped = stringify(operation&.map_error(e) || { class: e.class.name, message: e.message })
+        mapped = stringify(operation&.map_error(e) || { class: e.class.name, message: Bparity.exception_message(e) })
         mapped["cause"] = e.cause&.class&.name unless mapped.key?("cause")
         post_state = Recording::Serializer.dump(binding.state_projection&.call(subject))
         { "outcome" => { "kind" => "raise", **mapped }, "post_state" => post_state,
-          "yields" => yields || [], "external_calls" => [], "mutated_args" => [] }
+          "yields" => yields || [], "external_calls" => e.instance_variable_get(:@bparity_external_calls) || [],
+          "mutated_args" => mutated_indices(before_args || [], Recording::Serializer.dump(args || [])) }
       end
 
       def stringify(hash) = hash.to_h { |key, value| [key.to_s, value] }
+
+      def mutated_indices(before, after)
+        [before.length, after.length].max.times.reject { |index| before[index] == after[index] }
+      end
+
+      def contract_differences(operation_spec, example, actual)
+        preconditions = operation_spec.fetch("preconditions", [])
+        constraints = operation_spec.fetch("postconditions", []) + operation_spec.fetch("invariants", [])
+        return @refinement_comparator.compare(example.fetch("expect"), actual) if constraints.empty?
+
+        context = contract_context(example, actual)
+        precondition_violations = @contract_checker.check(preconditions, context)
+        errors = precondition_violations.select { |violation| violation["error"] }
+        unless errors.empty?
+          return errors.map do |violation|
+            { "path" => "$.contracts.#{violation['id']}", "expected" => violation["expression"],
+              "actual" => violation["error"] }
+          end
+        end
+        return @refinement_comparator.compare(example.fetch("expect"), actual) unless precondition_violations.empty?
+
+        @contract_checker.check(constraints, context).map do |violation|
+          { "path" => "$.contracts.#{violation['id']}", "expected" => violation["expression"],
+            "actual" => violation["error"] || false }
+        end
+      end
+
+      def contract_context(example, actual)
+        outcome = actual.fetch("outcome")
+        { result: outcome["kind"] == "return" ? Recording::Serializer.load(outcome["value"]) : nil,
+          args: Recording::Serializer.load(example.dig("given", "args") || []),
+          kwargs: Recording::Serializer.load(example.dig("given", "kwargs") || {}),
+          pre_state: Recording::Serializer.load(example.dig("given", "pre_state")),
+          post_state: Recording::Serializer.load(actual["post_state"]) }
+      end
     end
 
     class ExternalProbe
@@ -162,6 +227,7 @@ module Bparity
 
       def initialize(bindings)
         @bindings = bindings
+        @bindings_by_target = bindings.to_h { |binding| [Bparity.constantize(binding.target), binding] }
       end
 
       def install!
@@ -171,9 +237,12 @@ module Bparity
 
       def capture
         previous = Thread.current[THREAD_KEY]
-        Thread.current[THREAD_KEY] = []
+        context = Thread.current[THREAD_KEY] = { calls: [], bindings: @bindings_by_target }
         value = yield
-        { value:, calls: Thread.current[THREAD_KEY] }
+        { value:, calls: context.fetch(:calls) }
+      rescue StandardError => e
+        e.instance_variable_set(:@bparity_external_calls, context.fetch(:calls))
+        raise
       ensure
         Thread.current[THREAD_KEY] = previous
       end
@@ -182,25 +251,35 @@ module Bparity
 
       def install(binding)
         target = Bparity.constantize(binding.target)
+        installed = target.instance_variable_get(:@bparity_external_probe_methods) || []
+        methods = target.public_instance_methods(false) - installed
+        return if methods.empty?
+
+        target.instance_variable_set(:@bparity_external_probe_methods, installed | methods)
         mod = Module.new
-        target.public_instance_methods(false).each do |method_name|
+        methods.each do |method_name|
           mod.define_method(method_name) do |*args, **kwargs, &block|
             value = super(*args, **kwargs, &block)
-            calls = Thread.current[THREAD_KEY]
-            if calls
-              raw = { "target" => binding.source, "method" => method_name.to_s,
+            context = Thread.current[THREAD_KEY]
+            current_binding = context&.dig(:bindings, target)
+            if current_binding
+              raw = { "target" => current_binding.source, "method" => method_name.to_s,
                       "args" => Recording::Serializer.dump(args), "kwargs" => Recording::Serializer.dump(kwargs),
                       "outcome" => { "kind" => "return", "value" => Recording::Serializer.dump(value) } }
-              mapper = binding.call_mappers[method_name.to_s]
-              calls << (mapper ? mapper.call(raw) : raw)
+              mapper = current_binding.call_mappers[method_name.to_s]
+              context.fetch(:calls) << (mapper ? mapper.call(raw) : raw)
             end
             value
           rescue StandardError => e
-            Thread.current[THREAD_KEY]&.push({ "target" => binding.source, "method" => method_name.to_s,
-                                               "args" => Recording::Serializer.dump(args),
-                                               "kwargs" => Recording::Serializer.dump(kwargs),
-                                               "outcome" => { "kind" => "raise", "class" => e.class.name,
-                                                              "message" => e.message } })
+            context = Thread.current[THREAD_KEY]
+            current_binding = context&.dig(:bindings, target)
+            if current_binding
+              context.fetch(:calls) << { "target" => current_binding.source, "method" => method_name.to_s,
+                                         "args" => Recording::Serializer.dump(args),
+                                         "kwargs" => Recording::Serializer.dump(kwargs),
+                                         "outcome" => { "kind" => "raise", "class" => e.class.name,
+                                                        "message" => Bparity.exception_message(e) } }
+            end
             raise
           end
         end

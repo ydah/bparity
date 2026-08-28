@@ -36,6 +36,16 @@ RSpec.describe Bparity::Recording do
     expect(described_class::Serializer.load(described_class::Serializer.dump(value))).to eq(value)
   end
 
+  it "degrades cyclic values instead of overflowing the stack" do
+    value = []
+    value << value
+
+    expect(described_class::Serializer.dump(value)).to eq([
+                                                            { "$unserializable" => "Array",
+                                                              "$reason" => "cyclic reference" }
+                                                          ])
+  end
+
   it "records arguments, yields, state, external calls, and outcomes as JSONL" do
     Dir.mktmpdir do |dir|
       boundary = Bparity.boundary do
@@ -63,6 +73,20 @@ RSpec.describe Bparity::Recording do
     end
   end
 
+  it "replaces an old corpus instead of appending duplicate identifiers" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "corpus.jsonl")
+      writer = Bparity::Corpus::Writer.new(path)
+      writer.write("id" => "old")
+      writer.close
+      writer = Bparity::Corpus::Writer.new(path)
+      writer.write("id" => "new")
+      writer.close
+
+      expect(Bparity::Corpus::Reader.new(path).map { |record| record["id"] }).to eq(["new"])
+    end
+  end
+
   it "turns zero-count coverage branches into specification gaps" do
     Dir.mktmpdir do |dir|
       path = File.join(dir, "coverage.json")
@@ -73,6 +97,7 @@ RSpec.describe Bparity::Recording do
 
       gaps = [{ "kind" => "uncovered_branch", "location" => "legacy.rb:8" }]
       expect(described_class::CoverageTracker.gaps(path)).to eq(gaps)
+      expect(described_class::CoverageTracker.gaps(path, source_paths: ["replacement.rb"])).to be_empty
     end
   end
 
@@ -84,5 +109,13 @@ RSpec.describe Bparity::Recording do
 
     expected = [{ "$time" => "2020-01-01T00:00:00Z" }, "<ID:0>", 1.0]
     expect(canonicalizer.call([{ "$time" => "2026-01-01T00:00:00Z" }, uuid, 1.04])).to eq(expected)
+  end
+
+  it "freezes Time.now and Date.today only inside the recording context" do
+    described_class::Determinism.apply(freeze_time: "2020-01-01T00:00:00Z")
+    expect(Time.now).to eq(Time.utc(2020, 1, 1))
+    expect(Date.today).to eq(Date.new(2020, 1, 1))
+  ensure
+    described_class::Determinism.clear
   end
 end

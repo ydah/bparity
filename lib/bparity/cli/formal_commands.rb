@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Bparity
-  module FormalCommands
+  module FormalCommands # rubocop:disable Metrics/ModuleLength -- one private CLI command family
     private
 
     def command_prove(argv)
@@ -64,14 +64,41 @@ module Bparity
       old_callable = ->(*args) { old_class.new.public_send(method_name, *args) }
       new_callable = ->(*args) { operation.invoke(binding.build({}), args, {}) }
       runner = build_f2_runner(old_callable, new_callable, domains, operation, options)
+      violations = f2_static_violations(old_class, method_name, operation)
+      unless violations.empty?
+        return Formal::Result.new(level: :f2, verdict: :inconclusive,
+                                  scope: Formal::Scope.new(size: options[:size], depth: options[:depth],
+                                                           cases: 0, exhaustive: false,
+                                                           timebox: options[:timebox]),
+                                  assumptions: %i[h1 h3 h7], out_of_scope: ["dynamic Ruby"],
+                                  details: { "assumption_violations" => violations })
+      end
       target = binding.build({})
       monitored_class = target.is_a?(Module) ? target.singleton_class : target.class
       result, violations = Formal::Assumptions::WorldFreeze.new([old_class, monitored_class]).check { runner.run }
-      return result if violations.empty?
+      if violations.empty?
+        write_f2_counterexample(result, options, spec_subject, operation_spec)
+        return result
+      end
 
       Formal::Result.new(level: :f2, verdict: :inconclusive, scope: result.scope,
                          assumptions: result.assumptions, out_of_scope: result.out_of_scope,
                          details: { "assumption_violations" => violations })
+    end
+
+    def f2_static_violations(old_class, method_name, operation)
+      paths = [old_class.instance_method(method_name).source_location&.first,
+               operation.invoker&.source_location&.first].compact.uniq
+      Formal::Assumptions::DynamicCodeDetector.new.scan(paths)
+    end
+
+    def write_f2_counterexample(result, options, subject, operation)
+      return unless result.counterexample && options[:counterexample_out]
+
+      content = Formal::BoundedCounterexampleRSpec.call(result:, subject_name: subject.fetch("name"),
+                                                        operation_name: operation.fetch("name"))
+      FileUtils.mkdir_p(File.dirname(options[:counterexample_out]))
+      File.write(options[:counterexample_out], content)
     end
 
     def f2_domains(operation_spec, options)
@@ -116,14 +143,49 @@ module Bparity
               "Adapter subject #{binding.name} needs a state block for F3."
       end
 
-      operations = binding.operations.to_h { |name, operation| [name, observed_operation(operation)] }
-      learned = Formal::ActiveLearner.new(factory: -> { binding.build({}) },
-                                          state_projection: binding.state_projection, operations:).learn
+      static_violations = f3_static_violations(spec_subject, binding)
+      return inconclusive_f3(old_lts, options, static_violations) unless static_violations.empty?
+
+      learned, runtime_violations = learn_f3(binding)
       export_lts(options[:export_lts], old_lts, learned.lts) if options[:export_lts]
       result = Formal::LtsEquivalence.new.compare(old_lts, learned.lts, relation: options[:relation],
                                                                         exact: learned.complete)
+      unless runtime_violations.empty?
+        return Formal::Result.new(level: :f3, verdict: :inconclusive, scope: result.scope,
+                                  assumptions: result.assumptions, out_of_scope: result.out_of_scope,
+                                  details: result.details.merge("assumption_violations" => runtime_violations))
+      end
       write_lts_counterexample(result, options, old_lts, spec_subject)
       result
+    end
+
+    def f3_static_violations(spec_subject, binding)
+      parameterized = spec_subject.fetch("operations").filter_map do |operation|
+        next if operation.fetch("params", []).empty?
+
+        { "assumption" => "H6", "location" => operation.fetch("name"),
+          "reason" => "F3 requires a declared finite input alphabet for parameterized operations" }
+      end
+      paths = binding.operations.values.filter_map { |operation| operation.invoker&.source_location&.first }.uniq
+      parameterized + Formal::Assumptions::DynamicCodeDetector.new.scan(paths)
+    end
+
+    def learn_f3(binding)
+      operations = binding.operations.to_h { |name, operation| [name, observed_operation(operation)] }
+      learner = Formal::ActiveLearner.new(factory: -> { binding.build({}) },
+                                          state_projection: binding.state_projection, operations:)
+      target = binding.build({})
+      monitored_class = target.is_a?(Module) ? target.singleton_class : target.class
+      Formal::Assumptions::WorldFreeze.new([monitored_class]).check { learner.learn }
+    end
+
+    def inconclusive_f3(old_lts, options, violations)
+      Formal::Result.new(level: :f3, verdict: :inconclusive,
+                         scope: Formal::Scope.new(size: old_lts.states.length, depth: nil, cases: 0,
+                                                  exhaustive: false, timebox: options[:timebox]),
+                         assumptions: %i[h1 h3 h6 h7],
+                         out_of_scope: ["replacement model exploration"],
+                         details: { "assumption_violations" => violations })
     end
 
     def observed_operation(operation)
@@ -142,32 +204,82 @@ module Bparity
       spec = Formal::CounterexampleRSpec.call(lts: old_lts,
                                               sequence: result.counterexample.fetch("sequence"),
                                               subject_name: spec_subject.fetch("name"))
+      FileUtils.mkdir_p(File.dirname(options[:counterexample_out]))
       File.write(options[:counterexample_out], spec)
     end
 
     def export_lts(prefix, old_lts, new_lts)
+      FileUtils.mkdir_p(File.dirname(prefix))
       File.write("#{prefix}_old.aut", Formal::AldebaranExporter.call(old_lts))
       File.write("#{prefix}_new.aut", Formal::AldebaranExporter.call(new_lts))
     end
 
     def run_f4(bundle, adapter, options)
       validate_f4_options!(options)
+      fragment_violations = Formal::Deductive::FragmentChecker.new.then do |checker|
+        checker.check_file(options[:old_source], options[:old_method]) +
+          checker.check_file(options[:new_source], options[:new_method])
+      end
+      unless fragment_violations.empty?
+        return inconclusive_f4(options, "verifiable fragment rejected",
+                               fragment_violations)
+      end
+
       subject_spec = bundle.fetch("subjects").first
       operation_spec = subject_spec.fetch("operations").first
       binding = adapter.subjects.fetch(subject_spec.fetch("name"))
       operation = binding.operations.fetch(operation_spec.fetch("name"))
-      old_class = Bparity.constantize(subject_spec.fetch("old_class"))
+      runner, old_class = build_f4_runner(subject_spec, binding, operation, options)
+      target = binding.build({})
+      target_class = target.is_a?(Module) ? target.singleton_class : target.class
+      result, violations = Formal::Assumptions::WorldFreeze.new([old_class, target_class]).check { runner.run }
+      if violations.empty?
+        write_f4_counterexample(result, options, subject_spec, operation_spec)
+        return result
+      end
+
+      Formal::Result.new(level: :f4, verdict: :inconclusive, scope: result.scope,
+                         assumptions: result.assumptions, out_of_scope: result.out_of_scope,
+                         details: result.details.merge("assumption_violations" => violations))
+    rescue ConfigurationError => e
+      raise unless e.message.start_with?("F4 does not support")
+
+      inconclusive_f4(options, e.message, [])
+    end
+
+    def build_f4_runner(subject, binding, operation, options)
+      old_class = Bparity.constantize(subject.fetch("old_class"))
       translator = Formal::Deductive::RubyToSmt.new
       old_translation = translator.translate_file(options[:old_source], options[:old_method],
                                                   parameter_types: options[:types])
       new_translation = translator.translate_file(options[:new_source], options[:new_method],
                                                   parameter_types: options[:types])
-      inputs = f4_inputs(options[:types], options)
-      old_callable = ->(*args) { old_class.new.public_send(options[:old_method], *args) }
-      new_callable = ->(*args) { operation.invoke(binding.build({}), args, {}) }
-      Formal::Deductive::Runner.new(old_translation:, new_translation:, old_callable:, new_callable:,
-                                    validation_inputs: inputs,
-                                    solver: Formal::Deductive::Z3.new(timeout: options[:timebox])).run
+      runner = Formal::Deductive::Runner.new(
+        old_translation:, new_translation:,
+        old_callable: ->(*args) { old_class.new.public_send(options[:old_method], *args) },
+        new_callable: ->(*args) { operation.invoke(binding.build({}), args, {}) },
+        validation_inputs: f4_inputs(options[:types], options),
+        solver: Formal::Deductive::Z3.new(timeout: options[:timebox])
+      )
+      [runner, old_class]
+    end
+
+    def write_f4_counterexample(result, options, subject, operation)
+      return unless result.counterexample&.key?("input") && options[:counterexample_out]
+
+      content = Formal::Deductive::CounterexampleRSpec.call(
+        result:, subject_name: subject.fetch("name"), operation_name: operation.fetch("name")
+      )
+      FileUtils.mkdir_p(File.dirname(options[:counterexample_out]))
+      File.write(options[:counterexample_out], content)
+    end
+
+    def inconclusive_f4(options, reason, violations)
+      Formal::Result.new(level: :f4, verdict: :inconclusive,
+                         scope: Formal::Scope.new(size: options[:size], depth: options[:depth], cases: 0,
+                                                  exhaustive: false, timebox: options[:timebox]),
+                         assumptions: %i[h1 h3], out_of_scope: ["Ruby outside the declared pure fragment"],
+                         details: { "reason" => reason, "fragment_violations" => violations })
     end
 
     def validate_f4_options!(options)
@@ -188,7 +300,14 @@ module Bparity
       end
       return [[]] if domains.empty?
 
-      domains.first.product(*domains.drop(1)).first(options[:max_cases])
+      cases = domains.reduce(1) { |count, domain| count * domain.length }
+      if cases > options[:max_cases]
+        raise ConfigurationError,
+              "F4 does not support truncated translation validation. Increase --max-cases above #{cases} or " \
+              "reduce --scope."
+      end
+
+      domains.first.product(*domains.drop(1))
     end
-  end
+  end # rubocop:enable Metrics/ModuleLength
 end

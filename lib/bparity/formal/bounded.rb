@@ -120,7 +120,7 @@ module Bparity
       def observe(callable, input, error_mapper)
         { "kind" => "return", "value" => Recording::Serializer.dump(callable.call(*input)) }
       rescue StandardError => e
-        mapped = error_mapper ? error_mapper.call(e) : { class: e.class.name, message: e.message }
+        mapped = error_mapper ? error_mapper.call(e) : { class: e.class.name, message: Bparity.exception_message(e) }
         normalized = mapped.to_h { |key, value| [key.to_s, value] }.compact
         { "kind" => "raise", **normalized }
       end
@@ -129,7 +129,10 @@ module Bparity
         expected = observe(@old_callable, input, @old_error_mapper)
         actual = observe(@new_callable, input, @new_error_mapper)
         differences = @comparator.compare(expected, actual)
-        { "input" => input, "differences" => differences } unless differences.empty?
+        return if differences.empty?
+
+        { "input" => input, "expected" => expected, "actual" => actual,
+          "differences" => differences }
       end
 
       def pairwise_inputs
@@ -156,11 +159,52 @@ module Bparity
                       "note" => "case limit or timebox reached; exhaustive claim withheld" }
                   end
         Result.new(level: :f2, verdict:,
-                   scope: Scope.new(size: @size, depth: @depth, cases: count, exhaustive: complete,
+                   scope: Scope.new(size: @size, depth: @depth, cases: count,
+                                    exhaustive: complete && counterexample.nil?,
                                     timebox: @timebox),
                    assumptions: @assumptions,
-                   out_of_scope: ["values larger than size #{@size}", "structures deeper than #{@depth}"],
-                   counterexample:, details:)
+                   out_of_scope: ["values outside the explicitly enumerated domains",
+                                  "values larger than size #{@size}", "structures deeper than #{@depth}"],
+                   counterexample:, details: details.merge("domains" => domain_summary))
+      end
+
+      def domain_summary
+        @domains.map do |domain|
+          { "count" => domain.length, "sample" => Recording::Serializer.dump(domain.first(5)) }
+        end
+      end
+    end
+
+    module BoundedCounterexampleRSpec
+      module_function
+
+      def call(result:, subject_name:, operation_name:)
+        input = result.counterexample.fetch("input")
+        expected = result.counterexample.fetch("expected")
+        <<~RUBY
+          # frozen_string_literal: true
+
+          require "bparity"
+          require ENV["BPARITY_REPLACEMENT"] if ENV["BPARITY_REPLACEMENT"]
+          load ENV.fetch("BPARITY_ADAPTER")
+
+          RSpec.describe "F2 counterexample for #{subject_name}#{operation_name}" do
+            it "matches the legacy observation for #{input.inspect}" do
+              binding = Bparity.adapter_definition.subjects.fetch(#{subject_name.inspect})
+              operation = binding.operations.fetch(#{operation_name.inspect})
+              begin
+                value = operation.invoke(binding.build({}), #{input.inspect}, {})
+                value = operation.map_return(value)
+                actual = { "kind" => "return", "value" => Bparity::Recording::Serializer.dump(value) }
+              rescue StandardError => error
+                mapped = operation.map_error(error).transform_keys(&:to_s)
+                mapped["cause"] = error.cause&.class&.name unless mapped.key?("cause")
+                actual = { "kind" => "raise", **mapped }
+              end
+              expect(actual).to eq(#{expected.inspect})
+            end
+          end
+        RUBY
       end
     end
 
