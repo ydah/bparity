@@ -9,6 +9,7 @@ module Bparity
       validate_formal_options!(options)
       options[:requires].each { |path| require File.expand_path(path) }
       bundle = SpecBundle::Loader.load(options[:spec])
+      Bparity.reset!
       load File.expand_path(options[:adapter])
       raise ConfigurationError, "The adapter file did not call Bparity.adapter." unless Bparity.adapter_definition
 

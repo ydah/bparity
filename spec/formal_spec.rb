@@ -200,6 +200,22 @@ RSpec.describe Bparity::Formal do
                                    inputs: [[1]]).run
       expect(result).to include("input" => [0], "violations" => [include("id" => "execution", "error" => "broken")])
     end
+
+    it "refuses a vacuous pass when generated inputs violate every precondition" do
+      runner = described_class.new(callable: ->(value) { value },
+                                   invariants: [{ "id" => "same", "expr" => "return == args[0]" }],
+                                   preconditions: [{ "id" => "positive", "expr" => "args[0] > 0" }],
+                                   inputs: [[0], [-1]])
+      expect { runner.run }.to raise_error(Bparity::ConfigurationError, /no input satisfying the preconditions/)
+    end
+
+    it "does not shrink a counterexample outside its precondition" do
+      runner = described_class.new(callable: ->(value) { value },
+                                   invariants: [{ "id" => "small", "expr" => "return < 2" }],
+                                   preconditions: [{ "id" => "positive", "expr" => "args[0] > 0" }],
+                                   inputs: [[2]])
+      expect(runner.run.fetch("input")).to eq([2])
+    end
   end
 
   describe Bparity::Formal::DifferentialRunner do
@@ -211,6 +227,12 @@ RSpec.describe Bparity::Formal do
       differences = described_class.new(old_command:, new_command:, inputs: [[1]]).run
       expect(differences).to contain_exactly(include("input" => [1],
                                                      "differences" => [include("path" => "$.value")]))
+    end
+
+    it "transports invalid UTF-8 inputs through JSON-safe bytes" do
+      command = [RbConfig.ruby, "-rjson", "-e", "puts JSON.generate(JSON.parse(STDIN.read))"]
+      invalid = "\xFF".b.force_encoding(Encoding::UTF_8)
+      expect(described_class.new(old_command: command, new_command: command, inputs: [[invalid]]).run).to be_empty
     end
   end
 end

@@ -2,10 +2,12 @@
 
 require "optparse"
 require_relative "cli/formal_commands"
+require_relative "cli/verification_commands"
 
 module Bparity
   class CLI
     include FormalCommands
+    include VerificationCommands
 
     def self.start(argv = ARGV, out: $stdout, err: $stderr)
       new(out:, err:).start(argv)
@@ -52,6 +54,7 @@ module Bparity
       parser.parse!(argv)
       coverage_started = !Recording::CoverageTracker.running?
       Recording::CoverageTracker.start
+      Bparity.reset!
       load File.expand_path(options[:boundary])
       boundary = Bparity.boundary_definition || raise(ConfigurationError,
                                                       "The boundary file did not call Bparity.boundary.")
@@ -90,36 +93,6 @@ module Bparity
       SpecBundle::Writer.write(options[:out], bundle)
       @out.puts("Wrote #{options[:out]}")
       0
-    end
-
-    def command_verify(argv)
-      options = { spec: ".bparity/spec_bundle.yml", adapter: ".bparity/adapter.rb", format: "markdown" }
-      OptionParser.new do |opts|
-        opts.on("--spec PATH") { |value| options[:spec] = value }
-        opts.on("--adapter PATH") { |value| options[:adapter] = value }
-        opts.on("--mode MODE") { |value| options[:mode] = value }
-        opts.on("--format FORMAT") { |value| options[:format] = value }
-        opts.on("--out PATH") { |value| options[:out] = value }
-        opts.on("--require PATH") { |value| require File.expand_path(value) }
-      end.parse!(argv)
-      unless Reporting::Reporter::FORMATS.include?(options[:format])
-        raise ConfigurationError,
-              "Unknown report format #{options[:format]}. Use markdown, json, junit, or html."
-      end
-      bundle = SpecBundle::Loader.load(options[:spec])
-      load File.expand_path(options[:adapter])
-      adapter = Bparity.adapter_definition || raise(ConfigurationError,
-                                                    "The adapter file did not call Bparity.adapter.")
-      runner = Verification::Runner.new(bundle:, adapter:, mode: options[:mode])
-      results = runner.run
-      report = Reporting::Reporter.new(results, bundle:).public_send(options[:format])
-      if options[:out]
-        FileUtils.mkdir_p(File.dirname(options[:out]))
-        File.write(options[:out], report)
-      else
-        @out.puts(report)
-      end
-      runner.success? ? 0 : 1
     end
 
     def command_diff(argv)
@@ -184,6 +157,7 @@ module Bparity
       end.parse!(argv)
       options[:requires].each { |path| require File.expand_path(path) }
       bundle = SpecBundle::Loader.load(options[:spec])
+      Bparity.reset!
       load File.expand_path(options[:adapter])
       adapter = Bparity.adapter_definition || raise(ConfigurationError,
                                                     "The adapter file did not call Bparity.adapter.")

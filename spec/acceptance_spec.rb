@@ -74,9 +74,13 @@ RSpec.describe Bparity::CLI do
       base, spec = build_bundle("05_formal_negative", scenarios.fetch("05_formal_negative").first, directory)
       good = run_cli("prove", "--level", "f3", "--spec", spec, "--adapter", "#{base}/adapter.rb",
                      "--require", "#{base}/replacement/good.rb")
+      verify_good = run_cli("verify", "--runners", "model", "--spec", spec,
+                            "--adapter", "#{base}/adapter.rb", "--require", "#{base}/replacement/good.rb")
       broken = run_cli("prove", "--level", "f3", "--spec", spec, "--adapter", "#{base}/adapter.rb",
                        "--require", "#{base}/replacement/broken.rb")
       expect(good.first).to include('"verdict": "no_difference_found"')
+      expect(verify_good.last).to be_success
+      expect(verify_good.first).to include("PASS", "model")
       expect(broken.first).to include('"verdict": "difference_found"', '"sequence"')
 
       f2_good = run_cli("prove", "--level", "f2", "--scope", "size=2,depth=1", "--spec", spec,

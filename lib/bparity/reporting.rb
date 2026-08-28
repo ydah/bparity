@@ -43,7 +43,8 @@ module Bparity
       def summary
         counts = @results.group_by(&:status).transform_values(&:count)
         { "total" => @results.count, "pass" => counts.fetch(:pass, 0), "fail" => counts.fetch(:fail, 0),
-          "waived" => counts.fetch(:waived, 0), "results" => @results.map(&:to_h),
+          "waived" => counts.fetch(:waived, 0), "skipped" => counts.fetch(:skipped, 0),
+          "results" => @results.map(&:to_h),
           "assumptions" => @bundle&.fetch("verification_assumptions", []),
           "assurance_matrix" => @bundle ? AssuranceMatrix.new(@bundle).to_h : {},
           "five_point_assessment" => @bundle ? Adequacy::Analyzer.new(bundle: @bundle, results: @results).call : {} }
@@ -55,7 +56,7 @@ module Bparity
         data = summary
         lines = ["# bparity conformance report", "",
                  "Total: #{data['total']} | PASS: #{data['pass']} | " \
-                 "FAIL: #{data['fail']} | WAIVED: #{data['waived']}", ""]
+                 "FAIL: #{data['fail']} | WAIVED: #{data['waived']} | SKIPPED: #{data['skipped']}", ""]
         @results.each do |result|
           lines << "- **#{result.status.to_s.upcase}** `#{result.id}` #{result.description}"
           if result.waiver

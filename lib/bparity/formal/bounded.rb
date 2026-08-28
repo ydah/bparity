@@ -432,20 +432,29 @@ module Bparity
     end
 
     class PropertyRunner
-      def initialize(callable:, invariants:, inputs:, checker: ContractChecker.new)
+      def initialize(callable:, invariants:, inputs:, preconditions: [], checker: ContractChecker.new)
         @callable = callable
         @invariants = invariants
         @inputs = inputs
+        @preconditions = preconditions
         @checker = checker
       end
 
       def run
+        checked = 0
         @inputs.each do |args|
+          next unless preconditions_hold?(args)
+
+          checked += 1
           violations = violations_for(args)
           unless violations.empty?
             input = minimize(args)
             return { "input" => input, "violations" => violations_for(input) }
           end
+        end
+        if checked.zero?
+          raise ConfigurationError,
+                "Property verification generated no input satisfying the preconditions. Expand the input domain."
         end
         nil
       end
@@ -458,7 +467,9 @@ module Bparity
           shrink_candidates(args[index]).each do |candidate|
             trial = minimized.dup
             trial[index] = candidate
-            minimized = trial unless violations_for(trial).empty?
+            minimized = trial if preconditions_hold?(trial) && !violations_for(trial).empty?
+          rescue ConfigurationError
+            raise
           rescue StandardError
             next
           end
@@ -470,6 +481,16 @@ module Bparity
         @checker.check(@invariants, result: @callable.call(*args), args:)
       rescue StandardError => e
         [{ "id" => "execution", "error" => Bparity.exception_message(e), "input" => { args: } }]
+      end
+
+      def preconditions_hold?(args)
+        violations = @checker.check(@preconditions, result: nil, args:)
+        error = violations.find { |violation| violation["error"] }
+        if error
+          raise ConfigurationError,
+                "Property precondition #{error['id']} could not be evaluated: #{error['error']}."
+        end
+        violations.empty?
       end
 
       def shrink_candidates(value)
@@ -505,7 +526,8 @@ module Bparity
       private
 
       def observe(command, input)
-        output, error, status = Open3.capture3(*command, stdin_data: JSON.generate(input))
+        payload = Recording::Serializer.dump(input)
+        output, error, status = Open3.capture3(*command, stdin_data: JSON.generate(payload))
         unless status.success?
           raise ConfigurationError,
                 "Differential process failed: #{error.strip}. Fix the command and run the comparison again."

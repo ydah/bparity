@@ -68,10 +68,13 @@ end
 The verification step requires only the bundle, adapter, and replacement:
 
 ```bash
-bundle exec bparity verify --require lib/new_slug_service.rb
+bundle exec bparity verify --require lib/new_slug_service.rb \
+  --runners replay,property,model --fail-under 100
 ```
 
-Reports support `markdown`, `json`, `junit`, and `html`. A changed bundle checksum is rejected; intentional incompatibilities must be declared with `waive` in the adapter.
+`replay` checks recorded examples, `property` generates boundary inputs for declared contracts, and `model` checks a stateful replacement against the learned LTS. `differential` additionally requires `--old-command` and `--new-command`; both commands read one JSON input from stdin and print one JSON observation. For same-named classes and public methods, omit `--adapter` to use direct replay. An explicitly supplied but missing adapter is an error.
+
+Reports support `markdown`, `json`, `junit`, and `html`. A changed bundle checksum is rejected; intentional incompatibilities must be declared with `waive` in the adapter. Skipped model checks do not count toward `--fail-under`, and a run with only skipped checks fails.
 
 Generate an adapter skeleton when the bundle is ready:
 

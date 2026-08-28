@@ -190,6 +190,172 @@ RSpec.describe Bparity::CLI do
     end
   end
 
+  it "replays same-named public methods without an adapter file" do
+    stub_const("DirectReplayTarget", Class.new { def call(value) = value.upcase })
+    Dir.mktmpdir do |dir|
+      spec = File.join(dir, "spec.yml")
+      expected = { "outcome" => { "kind" => "return", "value" => "OK" }, "post_state" => nil,
+                   "yields" => [], "external_calls" => [], "mutated_args" => [] }
+      Bparity::SpecBundle::Writer.write(spec, "spec_bundle_version" => 2, "subjects" => [{
+                                          "name" => "DirectReplayTarget", "operations" => [{
+                                            "name" => "#call", "examples" => [{
+                                              "id" => "direct-1", "provenance_level" => "B",
+                                              "formal_level" => "F0", "provenance" => {},
+                                              "given" => { "args" => ["ok"], "kwargs" => {} },
+                                              "expect" => expected
+                                            }]
+                                          }]
+                                        }])
+      output = StringIO.new
+
+      status = Dir.chdir(dir) do
+        described_class.start(["verify", "--spec", spec], out: output, err: StringIO.new)
+      end
+      expect(status).to eq(0)
+      expect(output.string).to include("PASS", "direct-1")
+    end
+  end
+
+  it "uses a same-named module directly instead of constructing it" do
+    stub_const("DirectReplayModule", Module.new)
+    bundle = { "subjects" => [{ "name" => "DirectReplayModule", "operations" => [] }] }
+    adapter = described_class.new(out: StringIO.new, err: StringIO.new).send(:direct_adapter, bundle)
+
+    expect(adapter.subjects.fetch("DirectReplayModule").build).to equal(DirectReplayModule)
+  end
+
+  it "does not reuse a stale adapter when the loaded file omits the DSL" do
+    Bparity.adapter { subject("Unused") { construct { Object.new } } }
+    Dir.mktmpdir do |dir|
+      spec = File.join(dir, "spec.yml")
+      adapter = File.join(dir, "adapter.rb")
+      Bparity::SpecBundle::Writer.write(spec, "spec_bundle_version" => 2,
+                                              "subjects" => [{ "name" => "Unused", "operations" => [] }])
+      File.write(adapter, "# intentionally empty\n")
+      error = StringIO.new
+
+      status = described_class.start(["verify", "--spec", spec, "--adapter", adapter],
+                                     out: StringIO.new, err: error)
+      expect(status).to eq(2)
+      expect(error.string).to include("adapter file did not call Bparity.adapter")
+    end
+  end
+
+  it "does not hide an explicit missing adapter path behind direct replay" do
+    cli = described_class.new(out: StringIO.new, err: StringIO.new)
+    expect { cli.send(:load_verify_adapter, { "subjects" => [] }, "/missing/adapter.rb", true) }
+      .to raise_error(Bparity::ConfigurationError, /omit --adapter for direct replay/)
+  end
+
+  it "runs generated property inputs from the public verify command" do
+    stub_const("PropertyReplacement", Class.new do
+      def call(value)
+        value unless value.abs > 1_000
+      end
+    end)
+    Dir.mktmpdir do |dir|
+      spec = File.join(dir, "spec.yml")
+      adapter = File.join(dir, "adapter.rb")
+      Bparity::SpecBundle::Writer.write(spec, "spec_bundle_version" => 2, "subjects" => [{
+                                          "name" => "Value", "operations" => [{
+                                            "name" => "#call", "examples" => [],
+                                            "params" => [{ "name" => "value", "types" => ["Integer"],
+                                                           "observed_values" => [0] }],
+                                            "invariants" => [{ "id" => "present", "expr" => "return != nil" }]
+                                          }]
+                                        }])
+      File.write(adapter, <<~RUBY)
+        Bparity.adapter do
+          subject "Value" do
+            construct { PropertyReplacement.new }
+            operation("#call")
+          end
+        end
+      RUBY
+      output = StringIO.new
+
+      status = described_class.start(["verify", "--spec", spec, "--adapter", adapter,
+                                      "--runners", "property"], out: output, err: StringIO.new)
+      expect(status).to eq(1)
+      expect(output.string).to include("FAIL", "property:Value#call", "present")
+    end
+  end
+
+  # rubocop:disable-next RSpec/ExampleLength -- complete public JSON boundary setup
+  it "reports an invalid UTF-8 property counterexample as valid JSON" do
+    stub_const("EncodingReplacement", Class.new do
+      def call(value)
+        raise ArgumentError, "invalid encoding" unless value.valid_encoding?
+
+        value
+      end
+    end)
+    Dir.mktmpdir do |dir|
+      spec = File.join(dir, "spec.yml")
+      adapter = File.join(dir, "adapter.rb")
+      Bparity::SpecBundle::Writer.write(spec, "spec_bundle_version" => 2, "subjects" => [{
+                                          "name" => "Encoding", "operations" => [{
+                                            "name" => "#call", "examples" => [],
+                                            "params" => [{ "name" => "value", "types" => ["String"],
+                                                           "observed_values" => ["ok"] }],
+                                            "invariants" => [{ "id" => "present", "expr" => "return != nil" }]
+                                          }]
+                                        }])
+      File.write(adapter, <<~RUBY)
+        Bparity.adapter do
+          subject "Encoding" do
+            construct { EncodingReplacement.new }
+            operation("#call")
+          end
+        end
+      RUBY
+      output = StringIO.new
+
+      status = described_class.start(["verify", "--spec", spec, "--adapter", adapter,
+                                      "--runners", "property", "--format", "json"],
+                                     out: output, err: StringIO.new)
+      expect(status).to eq(1)
+      expect { JSON.parse(output.string) }.not_to raise_error
+      expect(output.string).to include("$string_bytes", "invalid encoding")
+    end
+  end
+
+  it "runs separate differential processes from the public verify command" do
+    Dir.mktmpdir do |dir|
+      spec = File.join(dir, "spec.yml")
+      Bparity::SpecBundle::Writer.write(spec, "spec_bundle_version" => 2, "subjects" => [{
+                                          "name" => "Value", "operations" => [{
+                                            "name" => "#call", "examples" => [],
+                                            "params" => [{ "name" => "value", "types" => ["Integer"],
+                                                           "observed_values" => [0] }]
+                                          }]
+                                        }])
+      reader = "input = JSON.parse(STDIN.read); puts JSON.generate('value' => input[0] + OFFSET)"
+      old_command = Shellwords.join([RbConfig.ruby, "-rjson", "-e", "OFFSET = 1; #{reader}"])
+      new_command = Shellwords.join([RbConfig.ruby, "-rjson", "-e", "OFFSET = 2; #{reader}"])
+      output = StringIO.new
+
+      status = Dir.chdir(dir) do
+        described_class.start(["verify", "--runners", "differential", "--spec", spec,
+                               "--subject", "Value", "--operation", "#call",
+                               "--old-command", old_command, "--new-command", new_command],
+                              out: output, err: StringIO.new)
+      end
+      expect(status).to eq(1)
+      expect(output.string).to include("FAIL", "differential:Value#call", "$.value")
+    end
+  end
+
+  it "rejects unknown runners and impossible verification thresholds in English" do
+    cli = described_class.new(out: StringIO.new, err: StringIO.new)
+    base = { format: "json", runners: ["guess"], fail_under: 100.0, size: 1, depth: 1,
+             max_cases: 1, timebox: 1, state_limit: 1 }
+    expect { cli.send(:validate_verify_options!, base) }
+      .to raise_error(Bparity::ConfigurationError, /Unknown verification runner guess/)
+    expect { cli.send(:validate_verify_options!, base.merge(runners: ["replay"], fail_under: 101.0)) }
+      .to raise_error(Bparity::ConfigurationError, /between 0 and 100/)
+  end
+
   it "builds a reviewable and verifiable bundle from static assertions only" do
     Dir.mktmpdir do |dir|
       test_path = File.join(dir, "widget_spec.rb")
