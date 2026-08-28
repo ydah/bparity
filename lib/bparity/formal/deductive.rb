@@ -288,12 +288,13 @@ module Bparity
       end
 
       class Z3
-        def initialize(timeout: 300)
+        def initialize(timeout: 300, executable: ENV.fetch("BPARITY_Z3", "z3"))
           @timeout = timeout
+          @executable = executable
         end
 
         def available?
-          _out, _err, status = Open3.capture3("z3", "--version")
+          _out, _err, status = Open3.capture3(@executable, "--version")
           status.success?
         rescue Errno::ENOENT
           false
@@ -301,7 +302,7 @@ module Bparity
 
         def solve(script)
           output = error = status = nil
-          Open3.popen3("z3", "-in") do |stdin, stdout, stderr, wait|
+          Open3.popen3(@executable, "-in") do |stdin, stdout, stderr, wait|
             stdin.write(script)
             stdin.close
             Timeout.timeout(@timeout) do
@@ -370,7 +371,7 @@ module Bparity
 
       class Runner
         def initialize(old_translation:, new_translation:, old_callable:, new_callable:, validation_inputs:,
-                       assumptions: %i[h1 h3], solver: Z3.new)
+                       assumptions: %i[h1 h3], solver: Z3.new, validation_scope: nil)
           @old_translation = old_translation
           @new_translation = new_translation
           @old_callable = old_callable
@@ -378,6 +379,9 @@ module Bparity
           @validation_inputs = validation_inputs
           @assumptions = assumptions
           @solver = solver
+          @validation_scope = validation_scope || { "cases" => validation_inputs.length,
+                                                    "exhaustive" => true,
+                                                    "domain" => "provided bounded validation inputs" }
         end
 
         def run
@@ -409,7 +413,16 @@ module Bparity
                      assumptions: @assumptions,
                      out_of_scope: ["Ruby outside the declared pure fragment", "unsupported library semantics"],
                      counterexample:,
-                     details: { "reason" => reason, "translation_validation" => validations.map(&:to_h) })
+                     details: { "reason" => reason, "translation_validation" => validations.map(&:to_h),
+                                "translation_validation_scope" => @validation_scope,
+                                "translated_methods" => translated_methods })
+        end
+
+        def translated_methods
+          [@old_translation, @new_translation].map do |translation|
+            { "source" => translation.source, "method" => translation.method_name,
+              "input_sorts" => translation.parameters.map(&:last), "output_sort" => translation.term.sort }
+          end
         end
 
         def counterexample(output)

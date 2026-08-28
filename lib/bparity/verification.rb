@@ -108,13 +108,17 @@ module Bparity
       def initialize(bundle:, adapter:, mode: nil)
         @bundle = bundle
         @adapter = adapter
-        @comparator = Comparator.new(mode: mode || bundle.fetch("conformance_mode", "refinement"))
+        @canonicalization = bundle.fetch("canonicalization", {}).transform_keys(&:to_sym)
+        @canonicalizer = Recording::Canonicalizer.new(@canonicalization)
+        @comparator = Comparator.new(mode: mode || bundle.fetch("conformance_mode", "refinement"),
+                                     float_tolerance: @canonicalization.fetch(:float_tolerance, Float::EPSILON))
         @refinement_comparator = Comparator.new(mode: :refinement)
         @contract_checker = Formal::ContractChecker.new
         @external_probe = ExternalProbe.new(adapter.externals).install!
       end
 
       def run
+        Recording::Determinism.apply(@canonicalization)
         results = @bundle.fetch("subjects").flat_map { |subject| replay_subject(subject) }
         unused = @adapter.waivers.keys - results.map(&:id)
         unless unused.empty?
@@ -122,6 +126,8 @@ module Bparity
                 "Waiver IDs were not found in the Spec Bundle: #{unused.join(', ')}. Remove or correct them."
         end
         results
+      ensure
+        Recording::Determinism.clear
       end
 
       private
@@ -145,7 +151,7 @@ module Bparity
 
       def replay_example(binding, subject, operation_spec, example)
         waiver = @adapter.waivers[example["id"]]
-        actual = invoke(binding, subject, operation_spec["name"], example.fetch("given"))
+        actual = @canonicalizer.call(invoke(binding, subject, operation_spec["name"], example.fetch("given")))
         differences = if @comparator.contract?
                         contract_differences(operation_spec, example, actual)
                       else

@@ -35,7 +35,7 @@ module Bparity
               method = klass.instance_method(name)
               [name, [method.owner.name, method.source_location, method.hash]]
             end
-            [klass.name, [klass.ancestors.map(&:name), methods]]
+            [klass, [klass.ancestors.map(&:name), methods]]
           end
         end
       end

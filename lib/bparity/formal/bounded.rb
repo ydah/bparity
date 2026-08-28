@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "json"
+require "open3"
+
 module Bparity
   module Formal
     class ValueEnumerator
@@ -19,9 +22,9 @@ module Bparity
                     when "Hash" then hashes(*inferred_hash_types)
                     when "NilClass", "nil" then [nil]
                     when "TrueClass", "FalseClass", "Boolean" then [false, true]
-                    else raise ConfigurationError, "Cannot enumerate #{type}. Add an explicit input domain."
+                    else return user_structures(type)
                     end
-        klass = Object.const_get(type, false) if Object.const_defined?(type, false)
+        klass = constant_class(type)
         (generated + (klass ? @observed.grep(klass) : [])).uniq
       end
 
@@ -59,6 +62,73 @@ module Bparity
       def inferred_hash_types
         pair = @observed.grep(Hash).flat_map(&:to_a).first
         pair ? pair.map { |item| item.class.name } : %w[String String]
+      end
+
+      def user_structures(type)
+        klass = Bparity.constantize(type.to_s)
+        examples = @observed.grep(klass)
+        if examples.empty?
+          raise ConfigurationError,
+                "Cannot enumerate #{type}. Add observed values or an explicit input domain."
+        end
+
+        fields = examples.flat_map(&:instance_variables).uniq
+        domains = fields.to_h do |field|
+          [field, (examples.map { |example| example.instance_variable_get(field) } + [nil]).uniq]
+        end
+        KoratEnumerator.new(klass:, fields:, domains:).values
+      end
+
+      def constant_class(type)
+        Bparity.constantize(type.to_s)
+      rescue ConfigurationError
+        nil
+      end
+    end
+
+    class KoratEnumerator
+      def initialize(klass:, fields:, domains:, predicate: ->(_value) { true })
+        @klass = klass
+        @fields = fields.map(&:to_sym)
+        @domains = domains.transform_keys(&:to_sym)
+        @predicate = predicate
+      end
+
+      def values
+        seen = {}
+        vectors.filter_map do |vector|
+          candidate = build(vector)
+          next unless @predicate.call(candidate)
+
+          signature = JSON.generate(shape(candidate))
+          next if seen[signature]
+
+          seen[signature] = true
+          candidate
+        end
+      end
+
+      private
+
+      def vectors
+        return [[]] if @fields.empty?
+
+        @domains.fetch(@fields.first).product(*@fields.drop(1).map { |field| @domains.fetch(field) })
+      end
+
+      def build(vector)
+        @klass.allocate.tap do |candidate|
+          @fields.zip(vector).each { |field, value| candidate.instance_variable_set(field, value) }
+        end
+      end
+
+      def shape(value, seen = {}.compare_by_identity)
+        return Recording::Serializer.dump(value) unless value.is_a?(@klass)
+        return { "$ref" => seen.fetch(value) } if seen.key?(value)
+
+        seen[value] = seen.length
+        { "$class" => @klass.name,
+          "$fields" => @fields.to_h { |field| [field, shape(value.instance_variable_get(field), seen)] } }
       end
     end
 
@@ -220,9 +290,11 @@ module Bparity
 
       def run
         @inputs.each do |args|
-          result = @callable.call(*args)
-          violations = @checker.check(@invariants, result:, args:)
-          return { "input" => shrink(args), "violations" => violations } unless violations.empty?
+          violations = violations_for(args)
+          unless violations.empty?
+            input = minimize(args)
+            return { "input" => input, "violations" => violations_for(input) }
+          end
         rescue StandardError
           next
         end
@@ -231,15 +303,67 @@ module Bparity
 
       private
 
-      def shrink(args)
-        args.map do |value|
-          case value
-          when String then value.empty? ? value : value[0]
-          when Array then value.first(1)
-          when Integer then value <=> 0
-          else value
+      def minimize(args)
+        minimized = args.dup
+        args.each_index do |index|
+          shrink_candidates(args[index]).each do |candidate|
+            trial = minimized.dup
+            trial[index] = candidate
+            minimized = trial unless violations_for(trial).empty?
+          rescue StandardError
+            next
           end
         end
+        minimized
+      end
+
+      def violations_for(args)
+        @checker.check(@invariants, result: @callable.call(*args), args:)
+      end
+
+      def shrink_candidates(value)
+        candidates = case value
+                     when String then ["", value[0]]
+                     when Array then [[], value.first(1)]
+                     when Integer then [0, value <=> 0]
+                     else []
+                     end
+        candidates.uniq - [value]
+      end
+    end
+
+    class DifferentialRunner
+      def initialize(old_command:, new_command:, inputs:)
+        @old_command = old_command
+        @new_command = new_command
+        @inputs = inputs
+      end
+
+      def run
+        @inputs.filter_map do |input|
+          expected = observe(@old_command, input)
+          actual = observe(@new_command, input)
+          differences = Verification::Differ.call(expected, actual)
+          unless differences.empty?
+            { "input" => input, "expected" => expected, "actual" => actual,
+              "differences" => differences }
+          end
+        end
+      end
+
+      private
+
+      def observe(command, input)
+        output, error, status = Open3.capture3(*command, stdin_data: JSON.generate(input))
+        unless status.success?
+          raise ConfigurationError,
+                "Differential process failed: #{error.strip}. Fix the command and run the comparison again."
+        end
+
+        JSON.parse(output)
+      rescue JSON::ParserError
+        raise ConfigurationError,
+              "Differential process returned invalid JSON. Make it print one JSON observation and try again."
       end
     end
   end

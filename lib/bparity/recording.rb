@@ -62,11 +62,29 @@ module Bparity
         return Time.iso8601(value["$time"]) if value.key?("$time")
         return Float(value["$float"]) if value.key?("$float")
         return value["$hash"].to_h { |key, item| [load(key), load(item)] } if value.key?("$hash")
+        return load_object(value) if value.key?("$class") && value.key?("$ivars")
 
         value.transform_values { |item| load(item) }
       end
 
+      def load_object(value)
+        klass = Bparity.constantize(value.fetch("$class"))
+        klass.allocate.tap do |object|
+          value.fetch("$ivars").each do |name, item|
+            object.instance_variable_set(name, load(item))
+          end
+        end
+      rescue ConfigurationError, TypeError
+        value.transform_values { |item| load(item) }
+      end
+      private_class_method :load_object
+
       def dump_object(value, projections, seen)
+        ivars = value.instance_variables.sort.to_h do |name|
+          [name.to_s, dump(value.instance_variable_get(name), projections:, seen:)]
+        end
+        return { "$class" => value.class.name, "$ivars" => ivars } unless ivars.empty?
+
         readers = value.class.public_instance_methods(false).select do |name|
           value.method(name).arity.zero? && !%i[to_s inspect hash].include?(name)
         end
@@ -343,6 +361,7 @@ module Bparity
         writer.write(@canonicalizer.call({
                                            "id" => format("bc-%06d", @sequence), "seq" => @sequence,
                                            "subject" => subject.name,
+                                           "canonicalization" => @boundary.canonicalization.transform_keys(&:to_s),
                                            "operation" => "##{operation}", "provenance" => provenance,
                                            "pre_state" => pre_state, "args" => Serializer.dump(args),
                                            "kwargs" => Serializer.dump(kwargs),

@@ -36,6 +36,18 @@ RSpec.describe Bparity::Recording do
     expect(described_class::Serializer.load(described_class::Serializer.dump(value))).to eq(value)
   end
 
+  it "reconstructs user-defined objects with their recorded state" do
+    stub_const("RecordedPoint", Class.new do
+      attr_reader :x
+
+      def initialize(value) = @x = value
+    end)
+
+    restored = described_class::Serializer.load(described_class::Serializer.dump(RecordedPoint.new(3)))
+    expect(restored).to be_a(RecordedPoint)
+    expect(restored.x).to eq(3)
+  end
+
   it "degrades cyclic values instead of overflowing the stack" do
     value = []
     value << value
@@ -65,6 +77,7 @@ RSpec.describe Bparity::Recording do
 
       record = Bparity::Corpus::Reader.new(writer.path).first
       expect(record).to include("operation" => "#convert",
+                                "canonicalization" => {},
                                 "pre_state" => { "$hash" => [[{ "$symbol" => "calls" }, 0]] })
       expect(record["post_state"]).to eq("$hash" => [[{ "$symbol" => "calls" }, 1]])
       expect(record["yields"]).to eq([["hello"]])

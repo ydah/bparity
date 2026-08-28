@@ -68,6 +68,7 @@ RSpec.describe Bparity::CLI do
     end
   end
 
+  # rubocop:disable-next RSpec/ExampleLength, RSpec/MultipleExpectations -- one shared bundle setup
   it "detects F2, F3, and F4 negative cases" do
     Dir.mktmpdir do |directory|
       base, spec = build_bundle("05_formal_negative", scenarios.fetch("05_formal_negative").first, directory)
@@ -79,9 +80,11 @@ RSpec.describe Bparity::CLI do
       expect(broken.first).to include('"verdict": "difference_found"', '"sequence"')
 
       f2_good = run_cli("prove", "--level", "f2", "--scope", "size=2,depth=1", "--spec", spec,
+                        "--subject", "PureToken", "--operation", "#token",
                         "--adapter", "#{base}/adapter.rb", "--require", "#{base}/legacy/turnstile.rb",
                         "--require", "#{base}/replacement/good.rb")
       f2_broken = run_cli("prove", "--level", "f2", "--scope", "size=2,depth=1", "--spec", spec,
+                          "--subject", "PureToken", "--operation", "#token",
                           "--adapter", "#{base}/adapter.rb", "--require", "#{base}/legacy/turnstile.rb",
                           "--require", "#{base}/replacement/formal_broken.rb", "--counterexample-out",
                           File.join(directory, "f2_counterexample_spec.rb"))
@@ -91,12 +94,27 @@ RSpec.describe Bparity::CLI do
                                                                                       "expect(actual).to eq")
 
       f4_broken = run_cli("prove", "--level", "f4", "--validate-translation", "--types", "Integer",
+                          "--subject", "PureToken", "--operation", "#token",
                           "--spec", spec, "--adapter", "#{base}/adapter.rb",
                           "--old-source", "#{base}/legacy/turnstile.rb", "--old-method", "token",
                           "--new-source", "#{base}/replacement/formal_broken.rb", "--new-method", "shift",
                           "--require", "#{base}/legacy/turnstile.rb",
-                          "--require", "#{base}/replacement/formal_broken.rb")
-      expect(f4_broken.first).to match(/"verdict": "(difference_found|inconclusive)"/)
+                          "--require", "#{base}/replacement/formal_broken.rb", "--counterexample-out",
+                          File.join(directory, "f4_counterexample_spec.rb"))
+      if ENV["BPARITY_Z3"]
+        expect(f4_broken.first).to include('"verdict": "difference_found"', '"input"')
+        expect(File.read(File.join(directory, "f4_counterexample_spec.rb"))).to include("F4 counterexample")
+        f4_good = run_cli("prove", "--level", "f4", "--validate-translation", "--types", "Integer",
+                          "--subject", "PureToken", "--operation", "#token", "--spec", spec,
+                          "--adapter", "#{base}/adapter.rb", "--old-source", "#{base}/legacy/turnstile.rb",
+                          "--old-method", "token", "--new-source", "#{base}/replacement/good.rb",
+                          "--new-method", "shift", "--require", "#{base}/legacy/turnstile.rb",
+                          "--require", "#{base}/replacement/good.rb")
+        expect(f4_good.first).to include('"verdict": "no_difference_found"',
+                                         '"translation_validation_scope"')
+      else
+        expect(f4_broken.first).to include('"verdict": "inconclusive"')
+      end
     end
   end
 

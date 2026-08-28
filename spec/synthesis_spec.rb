@@ -47,11 +47,75 @@ RSpec.describe Bparity::Synthesis do
       "provenance" => { "description" => "Slugifier works", "location" => "spec/x_spec.rb:2" },
       "args" => ["A"], "kwargs" => { "$hash" => [] }, "outcome" => { "kind" => "return", "value" => "a" }
     }]
-    static = [{ "description" => "Slugifier works", "assertions" => ["eq"] }]
+    static = [{ "subject" => "Slugifier", "operation" => "#call",
+                "description" => "Slugifier works", "assertions" => ["eq"], "arguments" => ["A"],
+                "expected_outcome" => { "kind" => "return", "value" => "a" } }]
 
     bundle = described_class::Synthesizer.new(records:, static_examples: static).call
     example = bundle.dig("subjects", 0, "operations", 0, "examples", 0)
     expect(example).to include("provenance_level" => "A", "formal_level" => "F0")
+  end
+
+  it "does not promote unrelated static evidence with the same description" do
+    records = [{ "id" => "bc-1", "subject" => "Legacy::Slugifier", "operation" => "#call",
+                 "provenance" => { "description" => "works" },
+                 "outcome" => { "kind" => "return", "value" => "ok" } }]
+    static = [{ "subject" => "Slugifier", "operation" => "#other", "description" => "works",
+                "assertions" => ["eq"], "arguments" => [],
+                "expected_outcome" => { "kind" => "return", "value" => "ok" } }]
+
+    example = described_class::Synthesizer.new(records:, static_examples: static).call
+                                          .dig("subjects", 0, "operations", 0, "examples", 0)
+    expect(example["provenance_level"]).to eq("B")
+  end
+
+  it "does not promote static evidence for another input or namespace" do
+    records = [{ "id" => "bc-1", "subject" => "Legacy::Slugifier", "operation" => "#call", "args" => ["A"],
+                 "provenance" => { "description" => "works" },
+                 "outcome" => { "kind" => "return", "value" => "ok" } }]
+    static = [{ "subject" => "Other::Slugifier", "operation" => "#call", "description" => "works",
+                "assertions" => ["eq"], "arguments" => ["B"],
+                "expected_outcome" => { "kind" => "return", "value" => "ok" } }]
+
+    example = described_class::Synthesizer.new(records:, static_examples: static).call
+                                          .dig("subjects", 0, "operations", 0, "examples", 0)
+    expect(example["provenance_level"]).to eq("B")
+  end
+
+  it "does not promote a static assertion that contradicts the recording" do
+    records = [{ "id" => "bc-1", "subject" => "Legacy::Slugifier", "operation" => "#call",
+                 "provenance" => { "description" => "works" },
+                 "outcome" => { "kind" => "return", "value" => "actual" } }]
+    static = [{ "subject" => "Slugifier", "operation" => "#call", "description" => "works", "arguments" => [],
+                "expected_outcome" => { "kind" => "return", "value" => "different" } }]
+
+    example = described_class::Synthesizer.new(records:, static_examples: static).call
+                                          .dig("subjects", 0, "operations", 0, "examples", 0)
+    expect(example["provenance_level"]).to eq("B")
+  end
+
+  it "preserves canonicalization settings in the Specification Bundle" do
+    records = [{ "id" => "bc-1", "subject" => "Clock", "operation" => "#now",
+                 "canonicalization" => { "freeze_time" => "2020-01-01T00:00:00Z", "random_seed" => 42 },
+                 "outcome" => { "kind" => "return", "value" => 1 } }]
+
+    bundle = described_class::Synthesizer.new(records:).call
+    expect(bundle["canonicalization"]).to eq("freeze_time" => "2020-01-01T00:00:00Z", "random_seed" => 42)
+  end
+
+  it "keeps observed parameter values JSON-safe in a persisted bundle" do
+    records = [{ "id" => "bc-1", "subject" => "Legacy::Value", "operation" => "#call",
+                 "args" => [{ "$symbol" => "ok" }], "outcome" => { "kind" => "return", "value" => true } }]
+
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "spec.yml")
+      bundle = described_class::Synthesizer.new(records:).call
+      Bparity::SpecBundle::Writer.write(path, bundle)
+      loaded = Bparity::SpecBundle::Loader.load(path)
+      expect(loaded.dig("subjects", 0, "operations", 0, "params", 0)).to include(
+        "types" => ["Symbol"], "observed_values" => [{ "$symbol" => "ok" }]
+      )
+    end
   end
 
   it "turns legacy raise guards into operation preconditions instead of gaps" do
@@ -86,5 +150,30 @@ RSpec.describe Bparity::Synthesis do
 
     expressions = described_class::InvariantMiner.new.mine(records).map { |item| item["expr"] }
     expect(expressions).to include("return != nil", "return.is_a?(String)", "return.match?(/\\A[a-z0-9-]*\\z/)")
+  end
+
+  it "prioritizes diverse behavior when limiting bundle examples" do
+    common = 51.times.map do |index|
+      { "id" => "bc-#{index}", "subject" => "Legacy::Value", "operation" => "#call", "args" => [1],
+        "outcome" => { "kind" => "return", "value" => 1 } }
+    end
+    distinct = { "id" => "bc-distinct", "subject" => "Legacy::Value", "operation" => "#call", "args" => [2],
+                 "outcome" => { "kind" => "return", "value" => 2 } }
+
+    examples = described_class::Synthesizer.new(records: common + [distinct]).call
+                                           .dig("subjects", 0, "operations", 0, "examples")
+    expect(examples.map { |example| example["id"] }).to include("bc-distinct")
+    expect(examples.length).to eq(50)
+  end
+
+  it "detects additive and monotonic metamorphic relations" do
+    relations = described_class::MetamorphicDetector.new.detect(->(value) { value * 2 }, [-1, 0, 1])
+    expect(relations).to include("additive", "monotonic")
+  end
+
+  it "detects permutation invariance even when idempotence is not type-compatible" do
+    relations = described_class::MetamorphicDetector.new.detect(lambda(&:sum), [[1, 2], [3, 2]])
+    expect(relations).to include("permutation_invariant")
+    expect(described_class::MetamorphicDetector.new.detect(->(value) { value }, [])).to be_empty
   end
 end

@@ -22,10 +22,84 @@ RSpec.describe Bparity::CLI do
     expect(output.string).to include("F4 requires --validate-translation")
   end
 
+  it "rejects invalid formal limits before running a proof" do
+    cli = described_class.new(out: StringIO.new, err: StringIO.new)
+    options = { level: "f2", size: -1, depth: 1, max_cases: 1, timebox: 1, state_limit: nil }
+
+    expect { cli.send(:validate_formal_options!, options) }
+      .to raise_error(Bparity::ConfigurationError, /Formal limits are invalid/)
+  end
+
   it "refuses to prove F4 after truncated translation validation" do
     cli = described_class.new(out: StringIO.new, err: StringIO.new)
     expect { cli.send(:f4_inputs, ["Integer"], size: 2, depth: 1, max_cases: 4) }
       .to raise_error(Bparity::ConfigurationError, /does not support truncated translation validation/)
+  end
+
+  it "refuses an ambiguous formal target instead of proving only the first operation" do
+    bundle = { "subjects" => [{ "name" => "One", "operations" => [{ "name" => "#a" }] },
+                              { "name" => "Two", "operations" => [{ "name" => "#b" }] }] }
+    cli = described_class.new(out: StringIO.new, err: StringIO.new)
+
+    expect { cli.send(:select_formal_operation, bundle, {}) }
+      .to raise_error(Bparity::ConfigurationError, /Select one formal subject/)
+  end
+
+  it "refuses to check only the first stateful subject" do
+    bundle = { "subjects" => [{ "name" => "One", "lts_ref" => "one" },
+                              { "name" => "Two", "lts_ref" => "two" }],
+               "lts" => [{ "id" => "one" }, { "id" => "two" }] }
+    cli = described_class.new(out: StringIO.new, err: StringIO.new)
+
+    expect { cli.send(:select_f3_subject, bundle, {}) }
+      .to raise_error(Bparity::ConfigurationError, /Select one F3 subject/)
+  end
+
+  it "promotes invariants only after an exhaustive successful F2 result" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "spec.yml")
+      bundle = { "spec_bundle_version" => 2, "subjects" => [{ "name" => "Value", "operations" => [{
+        "name" => "#call", "examples" => [],
+        "invariants" => [{ "id" => "inv-1", "expr" => "return != nil", "formal_level" => "F0" }]
+      }] }] }
+      Bparity::SpecBundle::Writer.write(path, bundle)
+      result = Bparity::Formal::Result.new(
+        level: :f2, verdict: :no_difference_found,
+        scope: Bparity::Formal::Scope.new(size: 1, depth: 1, cases: 1, exhaustive: true),
+        assumptions: [:h1], out_of_scope: []
+      )
+      cli = described_class.new(out: StringIO.new, err: StringIO.new)
+      options = { level: "f2", promote_invariants: true, spec: path, subject: "Value", operation: "#call" }
+
+      cli.send(:promote_f2_invariants, bundle, options, result)
+      expect(Bparity::SpecBundle::Loader.load(path).dig("subjects", 0, "operations", 0, "invariants", 0,
+                                                        "formal_level")).to eq("F2")
+    end
+  end
+
+  it "enumerates every declared F2 parameter type and rejects an unknown domain" do
+    cli = described_class.new(out: StringIO.new, err: StringIO.new)
+    options = { size: 1, depth: 1 }
+    domains = cli.send(:f2_domains, { "params" => [{ "name" => "value",
+                                                     "types" => %w[Integer String] }] }, options)
+    expect(domains.first).to include(-1, 0, 1, "", "a", nil)
+    expect { cli.send(:f2_domains, { "params" => [{ "name" => "value", "types" => [] }] }, options) }
+      .to raise_error(Bparity::ConfigurationError, /has no inferred type/)
+  end
+
+  it "enumerates recorded user-defined objects through the CLI domain path" do
+    stub_const("DomainPoint", Class.new do
+      attr_reader :x
+
+      def initialize(value) = @x = value
+    end)
+    serialized = Bparity::Recording::Serializer.dump(DomainPoint.new(1))
+    operation = { "params" => [{ "name" => "point", "types" => ["DomainPoint"],
+                                 "observed_values" => [serialized] }] }
+
+    domain = described_class.new(out: StringIO.new, err: StringIO.new)
+                            .send(:f2_domains, operation, size: 1, depth: 1).first
+    expect(domain.grep(DomainPoint).map(&:x)).to contain_exactly(1, nil)
   end
 
   it "discovers Ruby calls for an explicit target without C calls" do

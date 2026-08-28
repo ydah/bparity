@@ -34,6 +34,15 @@ RSpec.describe Bparity::Formal do
       expect(violations).to include(/H1/)
     end
 
+    it "tracks separate anonymous classes without fingerprint collisions" do
+      first = Class.new { def value = 1 }
+      second = Class.new { def value = 1 }
+      _value, violations = described_class::WorldFreeze.new([first, second]).check do
+        first.class_eval { def value = 2 }
+      end
+      expect(violations).to include(/H1/)
+    end
+
     it "detects eval and dynamic send with Prism" do
       Dir.mktmpdir do |dir|
         path = File.join(dir, "dynamic.rb")
@@ -58,6 +67,18 @@ RSpec.describe Bparity::Formal do
                                         [true, true])
       expect(hashes).to contain_exactly({}, { false => false }, { false => true }, { true => false },
                                         { true => true })
+    end
+
+    it "enumerates user structures while removing isomorphic candidates" do
+      node_class = Class.new { attr_accessor :next }
+      stub_const("KoratNode", node_class)
+      first = KoratNode.new
+      second = KoratNode.new
+      enumerator = Bparity::Formal::KoratEnumerator.new(
+        klass: KoratNode, fields: [:@next], domains: { :@next => [nil, first, second] }
+      )
+
+      expect(enumerator.values.length).to eq(2)
     end
   end
 
@@ -98,6 +119,28 @@ RSpec.describe Bparity::Formal do
 
       expect(result.scope.cases).to eq(4)
       expect(calls).to eq(8)
+    end
+  end
+
+  describe Bparity::Formal::PropertyRunner do
+    it "keeps a failing counterexample when smaller candidates pass" do
+      invariant = [{ "id" => "short", "expr" => "return < 2" }]
+      result = described_class.new(callable: lambda(&:length), invariants: invariant,
+                                   inputs: [["long"]]).run
+
+      expect(result["input"]).to eq(["long"])
+    end
+  end
+
+  describe Bparity::Formal::DifferentialRunner do
+    it "compares legacy and replacement observations in separate processes" do
+      reader = "input = JSON.parse(STDIN.read); puts JSON.generate('value' => input[0] + OFFSET)"
+      old_command = [RbConfig.ruby, "-rjson", "-e", "OFFSET = 1; #{reader}"]
+      new_command = [RbConfig.ruby, "-rjson", "-e", "OFFSET = 2; #{reader}"]
+
+      differences = described_class.new(old_command:, new_command:, inputs: [[1]]).run
+      expect(differences).to contain_exactly(include("input" => [1],
+                                                     "differences" => [include("path" => "$.value")]))
     end
   end
 end

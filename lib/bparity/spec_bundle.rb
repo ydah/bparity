@@ -45,7 +45,9 @@ module Bparity
 
         mode = bundle.fetch("conformance_mode", "refinement")
         invalid!("conformance_mode must be strict, refinement, or contract") unless CONFORMANCE_MODES.include?(mode)
+        invalid!("canonicalization must be an object") unless bundle.fetch("canonicalization", {}).is_a?(Hash)
         validate_subjects!(bundle.fetch("subjects"))
+        validate_lts!(bundle)
         return bundle unless verify_checksum
         unless bundle["checksum"]
           raise InvalidBundleError,
@@ -76,11 +78,40 @@ module Bparity
       end
       private_class_method :validate_subjects!
 
+      def validate_lts!(bundle)
+        models = bundle.fetch("lts", [])
+        invalid!("lts must be an array") unless models.is_a?(Array)
+        models.each { |model| validate_lts_model!(model) }
+        ids = models.filter_map { |model| model["id"] if model.is_a?(Hash) }
+        invalid!("LTS model IDs must be unique") unless unique?(ids)
+        references = bundle.fetch("subjects").filter_map { |subject| subject["lts_ref"] }
+        missing = references - ids
+        invalid!("LTS references are missing models: #{missing.join(', ')}") unless missing.empty?
+      end
+      private_class_method :validate_lts!
+
+      def validate_lts_model!(model)
+        invalid!("each LTS needs an ID, initial state, and transitions array") unless
+          model.is_a?(Hash) && present?(model["id"]) && present?(model["initial"]) &&
+          model["transitions"].is_a?(Array)
+        model.fetch("transitions").each do |transition|
+          required = %w[from input output to]
+          invalid!("each LTS transition needs #{required.join(', ')}") unless
+            transition.is_a?(Hash) && required.all? { |field| transition.key?(field) }
+        end
+      end
+      private_class_method :validate_lts_model!
+
       def validate_operation!(operation, ids)
         invalid!("each operation needs a non-empty name and an examples array") unless
           operation.is_a?(Hash) && present?(operation["name"]) && operation["examples"].is_a?(Array)
         %w[params preconditions postconditions invariants].each do |field|
           invalid!("operation #{field} must be an array") if operation.key?(field) && !operation[field].is_a?(Array)
+        end
+        operation.fetch("params", []).each do |param|
+          invalid!("each operation parameter needs a name, types, and observed_values") unless
+            param.is_a?(Hash) && present?(param["name"]) && param["types"].is_a?(Array) &&
+            param["observed_values"].is_a?(Array)
         end
         operation.fetch("examples").each { |example| validate_example!(example, ids) }
       end

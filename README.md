@@ -84,7 +84,7 @@ Run a bounded exhaustive comparison while both implementations are available:
 ```bash
 bundle exec bparity prove --level f2 --scope size=3,depth=2 \
   --require lib/legacy.rb --require lib/replacement.rb \
-  --counterexample-out spec/f2_counterexample_spec.rb
+  --counterexample-out spec/f2_counterexample_spec.rb --promote-invariants
 ```
 
 The result uses `no_difference_found`, `difference_found`, or `inconclusive`; it always includes the enumerated case count, scope, assumptions, and excluded inputs.

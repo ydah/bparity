@@ -50,5 +50,16 @@ RSpec.describe Bparity::SpecBundle do
     malformed_subject = { "spec_bundle_version" => 2, "subjects" => ["not an object"] }
     expect { described_class::Validator.validate!(malformed_subject, verify_checksum: false) }
       .to raise_error(Bparity::InvalidBundleError, /each subject needs/)
+
+    missing_lts = { "spec_bundle_version" => 2,
+                    "subjects" => [{ "name" => "Stateful", "lts_ref" => "missing", "operations" => [] }] }
+    expect { described_class::Validator.validate!(missing_lts, verify_checksum: false) }
+      .to raise_error(Bparity::InvalidBundleError, /LTS references are missing models/)
+
+    malformed_lts = { "spec_bundle_version" => 2,
+                      "subjects" => [{ "name" => "Stateful", "lts_ref" => "bad", "operations" => [] }],
+                      "lts" => [{ "id" => "bad", "initial" => "s0", "transitions" => [{}] }] }
+    expect { described_class::Validator.validate!(malformed_lts, verify_checksum: false) }
+      .to raise_error(Bparity::InvalidBundleError, /each LTS transition needs/)
   end
 end

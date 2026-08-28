@@ -25,6 +25,19 @@ RSpec.describe Bparity::Formal::LTS do
     expect(learned.lts).to have_attributes(states: %w[s0 s1], alphabet: %w[#close #open])
   end
 
+  it "marks state-limit exploration as incomplete" do
+    client = Class.new do
+      attr_reader :count
+
+      def initialize = @count = 0
+      def increment = @count += 1
+    end
+    learned = Bparity::Formal::ActiveLearner.new(factory: -> { client.new }, state_projection: lambda(&:count),
+                                                 operations: { "#increment" => lambda(&:increment) },
+                                                 state_limit: 2).learn
+    expect(learned.complete).to be(false)
+  end
+
   it "finds no difference when state names differ but traces match" do
     renamed = described_class.new(initial: "q0", transitions: old_lts.transitions.map do |transition|
       { "from" => transition.from == "closed" ? "q0" : "q1", "input" => transition.input,
@@ -46,6 +59,17 @@ RSpec.describe Bparity::Formal::LTS do
     result = Bparity::Formal::LtsEquivalence.new.compare(old_lts, broken)
     expect(result.to_h).to include("verdict" => "difference_found",
                                    "counterexample" => { "sequence" => %w[#open #close] })
+  end
+
+  it "is inconclusive for nondeterministic models instead of checking only the first transition" do
+    nondeterministic = described_class.new(initial: "closed", transitions: old_lts.transitions.map(&:to_h) + [
+      { "from" => "closed", "input" => "#open", "output" => "different",
+        "to" => "closed" }
+    ])
+    result = Bparity::Formal::LtsEquivalence.new.compare(nondeterministic, old_lts)
+
+    expect(result.to_h).to include("verdict" => "inconclusive",
+                                   "details" => include("reason" => /requires deterministic/))
   end
 
   it "exports valid Aldebaran structure and generates W-method sequences" do

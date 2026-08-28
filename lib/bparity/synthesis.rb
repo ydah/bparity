@@ -2,6 +2,7 @@
 
 require "prism"
 require "digest"
+require "json"
 
 module Bparity
   module Synthesis
@@ -36,13 +37,38 @@ module Bparity
 
     class MetamorphicDetector
       def detect(callable, samples)
+        return [] if samples.empty?
+
         relations = []
-        relations << "idempotent" if samples.all? do |sample|
-          callable.call(callable.call(sample)) == callable.call(sample)
+        relations << "idempotent" if holds? do
+          samples.all? do |sample|
+            callable.call(callable.call(sample)) == callable.call(sample)
+          end
+        end
+        relations << "permutation_invariant" if samples.all?(Array) && holds? do
+          samples.all? { |sample| callable.call(sample.reverse) == callable.call(sample) }
+        end
+        if samples.all?(Numeric)
+          relations << "additive" if holds? do
+            samples.product(samples).all? do |left, right|
+              callable.call(left + right) == callable.call(left) + callable.call(right)
+            end
+          end
+          relations << "monotonic" if holds? do
+            samples.sort.each_cons(2).all? do |left, right|
+              callable.call(left) <= callable.call(right)
+            end
+          end
         end
         relations
+      end
+
+      private
+
+      def holds?
+        yield
       rescue StandardError
-        []
+        false
       end
     end
 
@@ -298,6 +324,7 @@ module Bparity
           "spec_bundle_version" => SpecBundle::VERSION,
           "generated_at" => Time.now.utc.iso8601,
           "conformance_mode" => "refinement",
+          "canonicalization" => canonicalization,
           "verification_assumptions" => ASSUMPTIONS,
           "subjects" => subject_items,
           "lts" => learned_models,
@@ -308,6 +335,15 @@ module Bparity
       end
 
       private
+
+      def canonicalization
+        configurations = @records.filter_map { |record| record["canonicalization"] }.uniq
+        if configurations.length > 1
+          raise Error, "The corpus contains conflicting canonicalization settings. Record the corpus again."
+        end
+
+        configurations.first || {}
+      end
 
       def subjects
         recorded = @records.group_by { |record| record["subject"] }.map do |name, records|
@@ -321,7 +357,7 @@ module Bparity
       def static_subjects(recorded_names)
         executable = @static_examples.select { |example| example["operation"] && example["subject"] }
         executable.group_by { |example| example["subject"] }.filter_map do |name, examples|
-          next if recorded_names.include?(name)
+          next if recorded_names.any? { |recorded| short_name(recorded) == short_name(name) }
 
           { "name" => short_name(name), "old_class" => name, "operations" => static_operations(examples) }
         end
@@ -342,7 +378,7 @@ module Bparity
           values = examples.select { |example| example.fetch("arguments").length > index }
                            .map { |example| example.fetch("arguments")[index] }
           { "name" => "arg#{index}", "types" => values.map { |value| value.class.name }.uniq,
-            "observed_values" => values.uniq }
+            "observed_values" => values.map { |value| Recording::Serializer.dump(value) }.uniq }
         end
       end
 
@@ -377,10 +413,19 @@ module Bparity
 
       def operations(subject_name, records)
         records.group_by { |record| record["operation"] }.map do |name, calls|
-          sampled = calls.first(MAX_EXAMPLES_PER_OPERATION)
+          sampled = representative_sample(calls)
           { "name" => name, "params" => params(calls), "examples" => sampled.map { |call| example(call) },
             "preconditions" => preconditions(subject_name, name), "invariants" => @invariant_miner.mine(calls) }
         end
+      end
+
+      def representative_sample(calls)
+        signatures = {}
+        diverse = calls.select do |call|
+          signature = JSON.generate(call.values_at("args", "kwargs", "outcome", "post_state", "external_calls"))
+          !signatures.key?(signature) && (signatures[signature] = true)
+        end
+        (diverse + calls).uniq { |call| call["id"] }.first(MAX_EXAMPLES_PER_OPERATION)
       end
 
       def preconditions(subject_name, operation_name)
@@ -396,22 +441,40 @@ module Bparity
       def params(calls)
         count = calls.map { |call| call.fetch("args", []).length }.max || 0
         count.times.map do |index|
-          observed = calls.filter { |call| call.fetch("args", []).length > index }
-                          .map { |call| Recording::Serializer.load(call.fetch("args")[index]) }
+          serialized = calls.filter { |call| call.fetch("args", []).length > index }
+                            .map { |call| call.fetch("args")[index] }
+          observed = serialized.map { |value| Recording::Serializer.load(value) }
           { "name" => "arg#{index}", "types" => observed.map { |value| value.class.name }.uniq,
-            "observed_values" => observed.uniq }
+            "observed_values" => serialized.uniq }
         end
       end
 
       def example(call)
         provenance = call["provenance"] || {}
-        static = @static_examples.find { |item| item["description"] == provenance["description"] }
+        static = @static_examples.find { |item| matching_static_evidence?(item, call, provenance) }
         {
           "id" => call["id"], "provenance_level" => static ? "A" : "B", "formal_level" => "F0",
           "provenance" => provenance.merge("static_assertions" => static&.fetch("assertions", nil)).compact,
           "given" => call.slice("pre_state", "args", "kwargs", "block_given"),
           "expect" => call.slice("outcome", "post_state", "yields", "external_calls", "mutated_args")
         }
+      end
+
+      def matching_static_evidence?(item, call, provenance)
+        item["description"] == provenance["description"] && item["operation"] == call["operation"] &&
+          matching_subject?(item["subject"].to_s, call["subject"]) &&
+          Recording::Serializer.dump(item.fetch("arguments", [])) == call.fetch("args", []) &&
+          matching_outcome?(item, call)
+      end
+
+      def matching_subject?(static_name, recorded_name)
+        static_name == recorded_name || (!static_name.include?("::") && static_name == short_name(recorded_name))
+      end
+
+      def matching_outcome?(item, call)
+        expected = item["expected_outcome"]
+        actual = call["outcome"]
+        expected.is_a?(Hash) && actual.is_a?(Hash) && expected == actual.slice(*expected.keys)
       end
 
       def short_name(name) = name.split("::").last

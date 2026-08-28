@@ -15,3 +15,11 @@ bundle exec rspec spec/acceptance_spec.rb
 ```
 
 The acceptance process launches each CLI phase in a fresh Ruby process. This also demonstrates that verification needs the Specification Bundle, adapter, and replacement only; the legacy dependency is loaded solely while recording.
+
+Recording overhead is checked separately against the pure-function fixture:
+
+```bash
+bundle exec rake benchmark_recording
+```
+
+The task uses five runs and fails when median end-to-end overhead exceeds 50%.

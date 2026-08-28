@@ -41,6 +41,12 @@ module Bparity
       def outgoing(state) = transitions.select { |transition| transition.from == state }
       def step(state, input) = outgoing(state).find { |transition| transition.input == input }
 
+      def deterministic?
+        transitions.group_by { |transition| [transition.from, transition.input] }.values.none? do |items|
+          items.map { |transition| [transition.output, transition.to] }.uniq.length > 1
+        end
+      end
+
       def to_h
         { "initial" => initial, "states" => states, "alphabet" => alphabet,
           "transitions" => transitions.map(&:to_h) }
@@ -147,6 +153,15 @@ module Bparity
       def compare(old_lts, new_lts, relation: :trace, assumptions: %i[h1 h6 h7], exact: true)
         unless %i[trace bisim].include?(relation.to_sym)
           raise ConfigurationError, "Unsupported LTS relation #{relation}. Use trace or bisim."
+        end
+        unless old_lts.deterministic? && new_lts.deterministic?
+          return Result.new(level: :f3, verdict: :inconclusive,
+                            scope: Scope.new(size: [old_lts.states.length, new_lts.states.length].max,
+                                             depth: nil, cases: 0, exhaustive: false),
+                            assumptions:, out_of_scope: ["nondeterministic model equivalence"],
+                            details: details(old_lts, new_lts, relation, false).merge(
+                              "reason" => "The built-in F3 checker requires deterministic LTS models."
+                            ))
         end
 
         counterexample = distinguishing_sequence(old_lts, new_lts)

@@ -64,6 +64,27 @@ RSpec.describe Bparity::Verification do
     expect(runner).to be_success
   end
 
+  it "reapplies recorded deterministic time during verification" do
+    clock_bundle = {
+      "canonicalization" => { "freeze_time" => "2020-01-01T00:00:00Z" },
+      "subjects" => [{ "name" => "Clock", "operations" => [{ "name" => "#now", "examples" => [{
+        "id" => "ex-time", "provenance" => {}, "given" => { "args" => [], "kwargs" => {} },
+        "expect" => { "outcome" => { "kind" => "return", "value" => { "$time" => "2020-01-01T00:00:00Z" } },
+                      "post_state" => nil, "yields" => [], "external_calls" => [], "mutated_args" => [] }
+      }] }] }]
+    }
+    clock = Class.new { def now = Time.now }
+    stub_const("ReplacementClock", clock)
+    adapter = Bparity.adapter do
+      subject "Clock" do
+        construct { ReplacementClock.new }
+        operation("#now")
+      end
+    end
+
+    expect(described_class::Runner.new(bundle: clock_bundle, adapter:).run.first.status).to eq(:pass)
+  end
+
   it "reports a key-level difference for a broken implementation" do
     adapter = Bparity.adapter do
       subject "Slugifier" do
