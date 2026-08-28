@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
 require "optparse"
+require_relative "cli/formal_commands"
 
 module Bparity
   class CLI
+    include FormalCommands
+
     def self.start(argv = ARGV, out: $stdout, err: $stderr)
       new(out:, err:).start(argv)
     end
@@ -31,37 +34,47 @@ module Bparity
     private
 
     def command_record(argv)
-      options = { boundary: ".bparity/boundary.rb", out: ".bparity/corpus/behavior.jsonl", requires: [] }
+      options = { boundary: ".bparity/boundary.rb", out: ".bparity/corpus/behavior.jsonl",
+                  coverage: ".bparity/coverage.json", requires: [] }
       parser = OptionParser.new do |opts|
         opts.on("--boundary PATH") { |value| options[:boundary] = value }
         opts.on("--out PATH") { |value| options[:out] = value }
         opts.on("--require PATH") { |value| options[:requires] << value }
         opts.on("--driver DRIVER") { |value| options[:driver] = value }
+        opts.on("--coverage PATH") { |value| options[:coverage] = value }
       end
       parser.parse!(argv)
-      options[:requires].each { |path| require File.expand_path(path) }
+      coverage_started = !Recording::CoverageTracker.running?
+      Recording::CoverageTracker.start
       load File.expand_path(options[:boundary])
       boundary = Bparity.boundary_definition || raise(ConfigurationError,
                                                       "The boundary file did not call Bparity.boundary.")
+      srand(boundary.canonicalization[:random_seed]) if boundary.canonicalization[:random_seed]
+      options[:requires].each { |path| require File.expand_path(path) }
       writer = Corpus::Writer.new(options[:out])
       Recording::Recorder.new(boundary:, writer:).install!
-      status = run_driver(options[:driver] || boundary.driver_config&.fetch(:name, nil), argv, boundary)
-      writer.close
-      status
+      run_driver(options[:driver] || boundary.driver_config&.fetch(:name, nil), argv, boundary)
+    ensure
+      writer&.close
+      Recording::CoverageTracker.finish(options[:coverage]) if coverage_started && options&.fetch(:coverage, nil)
     end
 
     def command_synthesize(argv)
-      options = { corpus: ".bparity/corpus/behavior.jsonl", out: ".bparity/spec_bundle.yml", tests: [], source: [] }
+      options = { corpus: ".bparity/corpus/behavior.jsonl", out: ".bparity/spec_bundle.yml", tests: [], source: [],
+                  coverage: nil }
       OptionParser.new do |opts|
         opts.on("--corpus PATH") { |value| options[:corpus] = value }
         opts.on("--out PATH") { |value| options[:out] = value }
         opts.on("--tests GLOB") { |value| options[:tests].concat(Dir.glob(value)) }
         opts.on("--source GLOB") { |value| options[:source].concat(Dir.glob(value)) }
+        opts.on("--coverage PATH") { |value| options[:coverage] = value }
       end.parse!(argv)
       extractor = Synthesis::StaticExtractor.new
+      facts = extractor.extract_source(options[:source])
+      facts.concat(Recording::CoverageTracker.gaps(options[:coverage])) if options[:coverage]
       bundle = Synthesis::Synthesizer.new(records: Corpus::Reader.new(options[:corpus]).to_a,
                                           static_examples: extractor.extract_tests(options[:tests]),
-                                          source_facts: extractor.extract_source(options[:source])).call
+                                          source_facts: facts).call
       SpecBundle::Writer.write(options[:out], bundle)
       @out.puts("Wrote #{options[:out]}")
       0
@@ -117,46 +130,61 @@ module Bparity
       0
     end
 
-    def command_prove(argv)
-      options = { spec: ".bparity/spec_bundle.yml", adapter: ".bparity/adapter.rb", level: "f2",
-                  size: 3, depth: 2, max_cases: 100_000, timebox: 300, requires: [], relation: "trace" }
+    def command_discover(argv)
+      options = { requires: [], targets: [] }
+      OptionParser.new do |opts|
+        opts.on("--require PATH") { |value| options[:requires] << value }
+        opts.on("--target CLASS") { |value| options[:targets] << value }
+      end.parse!(argv)
+      options[:requires].each { |path| require File.expand_path(path) }
+      if options[:targets].empty?
+        message = "Discovery needs at least one --target CLASS. " \
+                  "Add the public legacy classes to inspect."
+        raise ConfigurationError, message
+      end
+
+      targets = options[:targets].to_h { |name| [name, Bparity.constantize(name)] }
+      observed = targets.to_h { |name, _target| [name, []] }
+      trace = TracePoint.new(:call) do |event|
+        targets.each { |name, target| observed[name] << event.method_id if event.self.is_a?(target) }
+      end
+      trace.enable { argv.each { |path| load File.expand_path(path) } }
+      @out.puts(discovered_boundary(targets, observed))
+      0
+    end
+
+    def command_adequacy(argv)
+      options = { spec: ".bparity/spec_bundle.yml", adapter: ".bparity/adapter.rb", requires: [] }
       OptionParser.new do |opts|
         opts.on("--spec PATH") { |value| options[:spec] = value }
         opts.on("--adapter PATH") { |value| options[:adapter] = value }
-        opts.on("--level LEVEL") { |value| options[:level] = value }
-        opts.on("--scope SCOPE") { |value| parse_scope(value, options) }
-        opts.on("--max-cases N", Integer) { |value| options[:max_cases] = value }
-        opts.on("--timebox SECONDS", Integer) { |value| options[:timebox] = value }
-        opts.on("--equivalence RELATION") { |value| options[:relation] = value }
-        opts.on("--export-lts PREFIX") { |value| options[:export_lts] = value }
-        opts.on("--counterexample-out PATH") { |value| options[:counterexample_out] = value }
         opts.on("--require PATH") { |value| options[:requires] << value }
+        opts.on("--mutant") { options[:mutant] = true }
       end.parse!(argv)
-      unless %w[f2 f3].include?(options[:level])
-        raise ConfigurationError, "Formal level #{options[:level]} is not available through this runner. Use f2 or f3."
-      end
-
       options[:requires].each { |path| require File.expand_path(path) }
       bundle = SpecBundle::Loader.load(options[:spec])
       load File.expand_path(options[:adapter])
-      result = if options[:level] == "f2"
-                 run_f2(bundle, Bparity.adapter_definition, options)
-               else
-                 run_f3(bundle, Bparity.adapter_definition, options)
-               end
-      @out.puts(JSON.pretty_generate(result.to_h))
-      result.success? ? 0 : 1
+      adapter = Bparity.adapter_definition || raise(ConfigurationError,
+                                                    "The adapter file did not call Bparity.adapter.")
+      results = Verification::Runner.new(bundle:, adapter:).run
+      mutation = options[:mutant] ? Adequacy::MutantBridge.new.run : nil
+      @out.puts(JSON.pretty_generate(Adequacy::Analyzer.new(bundle:, results:, mutation:).call))
+      0
     end
 
     def command_init(argv)
       options = {}
       OptionParser.new do |opts|
         opts.on("--timecapsule") { options[:timecapsule] = true }
+        opts.on("--from-spec PATH") { |value| options[:from_spec] = value }
       end.parse!(argv)
       FileUtils.mkdir_p(".bparity")
       write_unless_exists(".bparity/boundary.rb", "Bparity.boundary do\n  # observe \"Legacy::Class\"\nend\n")
-      adapter = "Bparity.adapter(spec: \".bparity/spec_bundle.yml\") do\n  " \
-                "# subject \"Class\" do\n  # end\nend\n"
+      adapter = if options[:from_spec]
+                  adapter_template(options[:from_spec])
+                else
+                  "Bparity.adapter(spec: \".bparity/spec_bundle.yml\") do\n  # subject \"Class\" do\n  # end\nend\n"
+                end
       write_unless_exists(".bparity/adapter.rb", adapter)
       if options[:timecapsule]
         FileUtils.mkdir_p(".bparity/timecapsule")
@@ -174,6 +202,7 @@ module Bparity
         RSpec::Core::Runner.run(files, @err, @out)
       when :minitest
         require "minitest"
+        Recording::MinitestDriver.install!
         (argv.empty? ? Dir.glob(boundary.driver_config&.fetch(:files, "test/**/*_test.rb")) : argv).each do |file|
           require File.expand_path(file)
         end
@@ -185,102 +214,34 @@ module Bparity
       raise ConfigurationError, "The #{driver} driver is not installed. Add it to the legacy environment and try again."
     end
 
-    def run_f2(bundle, adapter, options)
-      spec_subject = bundle.fetch("subjects").first
-      operation_spec = spec_subject.fetch("operations").first
-      binding = adapter.subjects.fetch(spec_subject.fetch("name"))
-      operation = binding.operations.fetch(operation_spec.fetch("name"))
-      old_class = Bparity.constantize(spec_subject.fetch("old_class"))
-      domains = f2_domains(operation_spec, options)
-      method_name = operation_spec.fetch("name").delete_prefix("#")
-      old_callable = ->(*args) { old_class.new.public_send(method_name, *args) }
-      new_callable = ->(*args) { operation.invoke(binding.build({}), args, {}) }
-      runner = build_f2_runner(old_callable, new_callable, domains, operation, options)
-      target = binding.build({})
-      monitored_class = target.is_a?(Module) ? target.singleton_class : target.class
-      result, violations = Formal::Assumptions::WorldFreeze.new([old_class, monitored_class]).check { runner.run }
-      return result if violations.empty?
-
-      Formal::Result.new(level: :f2, verdict: :inconclusive, scope: result.scope,
-                         assumptions: result.assumptions, out_of_scope: result.out_of_scope,
-                         details: { "assumption_violations" => violations })
-    end
-
-    def f2_domains(operation_spec, options)
-      operation_spec.fetch("params", []).map do |param|
-        type = param.fetch("types", ["String"]).first
-        observed = param.fetch("observed_values", [])
-        alphabet = observed.grep(String).flat_map(&:chars).uniq.first(8)
-        Formal::ValueEnumerator.new(size: options[:size], depth: options[:depth],
-                                    alphabet: alphabet.empty? ? %w[a b] : alphabet, observed:).values(type) + [nil]
-      end
-    end
-
-    def build_f2_runner(old_callable, new_callable, domains, operation, options)
-      Formal::ExhaustiveRunner.new(old_callable:, new_callable:, domains:, size: options[:size],
-                                   depth: options[:depth], assumptions: %i[h1 h3 h7],
-                                   max_cases: options[:max_cases], timebox: options[:timebox],
-                                   new_error_mapper: operation.method(:map_error))
-    end
-
-    def parse_scope(value, options)
-      value.split(",").each do |entry|
-        key, number = entry.split("=", 2)
-        raise ConfigurationError, "Invalid scope #{entry}. Use size=N,depth=N." unless %w[size depth].include?(key)
-
-        options[key.to_sym] = Integer(number, 10)
-      end
-    rescue ArgumentError
-      raise ConfigurationError, "Invalid scope #{value}. Use size=N,depth=N."
-    end
-
-    def run_f3(bundle, adapter, options)
-      spec_subject = bundle.fetch("subjects").find { |subject| subject["lts_ref"] }
-      unless spec_subject
-        raise ConfigurationError,
-              "The Spec Bundle has no stateful subject. Record with a state projection first."
-      end
-
-      old_data = bundle.fetch("lts").find { |model| model["id"] == spec_subject["lts_ref"] }
-      old_lts = Formal::LTS.from_h(old_data)
-      binding = adapter.subjects.fetch(spec_subject.fetch("name"))
-      unless binding.state_projection
-        raise ConfigurationError, "Adapter subject #{binding.name} needs a state block for F3."
-      end
-
-      operations = binding.operations.to_h do |name, operation|
-        callable = lambda do |subject|
-          value = operation.invoke(subject, [], {})
-          Formal::ObservedOutput.new({ "kind" => "return",
-                                       "value" => Recording::Serializer.dump(operation.map_return(value)) })
-        rescue StandardError => e
-          Formal::ObservedOutput.new({ "kind" => "raise", **operation.map_error(e) })
-        end
-        [name, callable]
-      end
-      learned = Formal::ActiveLearner.new(factory: -> { binding.build({}) },
-                                          state_projection: binding.state_projection, operations:).learn
-      export_lts(options[:export_lts], old_lts, learned.lts) if options[:export_lts]
-      result = Formal::LtsEquivalence.new.compare(old_lts, learned.lts, relation: options[:relation],
-                                                                        exact: learned.complete)
-      if result.counterexample && options[:counterexample_out]
-        spec = Formal::CounterexampleRSpec.call(lts: old_lts,
-                                                sequence: result.counterexample.fetch("sequence"),
-                                                subject_name: spec_subject.fetch("name"))
-        File.write(options[:counterexample_out], spec)
-      end
-      result
-    end
-
-    def export_lts(prefix, old_lts, new_lts)
-      File.write("#{prefix}_old.aut", Formal::AldebaranExporter.call(old_lts))
-      File.write("#{prefix}_new.aut", Formal::AldebaranExporter.call(new_lts))
-    end
-
     def write_unless_exists(path, content)
       raise ConfigurationError, "#{path} already exists. Move it aside before running init." if File.exist?(path)
 
       File.write(path, content)
+    end
+
+    def discovered_boundary(targets, observed)
+      body = targets.map do |name, target|
+        candidates = observed.fetch(name).uniq
+        candidates = target.public_instance_methods(false) if candidates.empty?
+        methods = candidates.sort.map { |method_name| ":#{method_name}" }.join(", ")
+        dynamic = target.instance_methods(false).grep(/method_missing|respond_to_missing/)
+        warning = dynamic.empty? ? "" : "\n    # Review dynamic methods: #{dynamic.join(', ')}"
+        "  observe #{name.inspect} do\n    methods #{methods}#{warning}\n  end"
+      end.join("\n\n")
+      "Bparity.boundary do\n#{body}\nend\n"
+    end
+
+    def adapter_template(path)
+      bundle = SpecBundle::Loader.load(path)
+      subjects = bundle.fetch("subjects").map do |subject|
+        operations = subject.fetch("operations").map do |operation|
+          "    operation #{operation.fetch('name').inspect} do\n      " \
+            "# invoke { |subject, args, kwargs| }\n    end"
+        end.join("\n")
+        "  subject #{subject.fetch('name').inspect} do\n    # construct { }\n#{operations}\n  end"
+      end.join("\n\n")
+      "Bparity.adapter(spec: #{path.inspect}) do\n#{subjects}\nend\n"
     end
 
     def timecapsule
@@ -298,7 +259,7 @@ module Bparity
       @out.puts <<~HELP
         Usage: bparity COMMAND [options]
 
-        Commands: init, record, synthesize, verify, diff, explain, assumptions, prove, adequacy
+        Commands: init, discover, record, synthesize, verify, diff, explain, assumptions, prove, adequacy
       HELP
       0
     end

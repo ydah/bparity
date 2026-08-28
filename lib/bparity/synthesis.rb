@@ -114,6 +114,7 @@ module Bparity
     end
 
     class Synthesizer
+      MAX_EXAMPLES_PER_OPERATION = 50
       ASSUMPTIONS = [
         { "id" => "H1", "name" => "world_freeze", "enforced_by" => "runtime monitor" },
         { "id" => "H3", "name" => "no_eval", "enforced_by" => "Prism static detection" },
@@ -165,7 +166,8 @@ module Bparity
 
       def operations(records)
         records.group_by { |record| record["operation"] }.map do |name, calls|
-          { "name" => name, "params" => params(calls), "examples" => calls.map { |call| example(call) },
+          sampled = calls.first(MAX_EXAMPLES_PER_OPERATION)
+          { "name" => name, "params" => params(calls), "examples" => sampled.map { |call| example(call) },
             "invariants" => @invariant_miner.mine(calls) }
         end
       end

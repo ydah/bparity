@@ -49,6 +49,16 @@ RSpec.describe Bparity::Formal do
       values = described_class.new(size: 2, depth: 1, alphabet: %w[a b]).values("String")
       expect(values).to contain_exactly("", "a", "b", "aa", "ab", "ba", "bb")
     end
+
+    it "enumerates bounded arrays and hashes from observed element types" do
+      arrays = described_class.new(size: 2, depth: 1, observed: [[true]]).values("Array")
+      hashes = described_class.new(size: 1, depth: 1, observed: [{ true => false }]).values("Hash")
+
+      expect(arrays).to contain_exactly([], [false], [true], [false, false], [false, true], [true, false],
+                                        [true, true])
+      expect(hashes).to contain_exactly({}, { false => false }, { false => true }, { true => false },
+                                        { true => true })
+    end
   end
 
   describe Bparity::Formal::ExhaustiveRunner do

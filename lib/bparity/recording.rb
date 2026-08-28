@@ -3,6 +3,7 @@
 require "digest"
 require "fileutils"
 require "time"
+require "coverage"
 
 module Bparity
   module Recording
@@ -11,6 +12,11 @@ module Bparity
 
       def external_stack = Thread.current[:bparity_external_stack] ||= []
       def append_external(call) = external_stack.last&.push(call)
+      def provenance = Thread.current[:bparity_provenance]
+
+      def provenance=(value)
+        Thread.current[:bparity_provenance] = value
+      end
     end
 
     module Serializer
@@ -69,8 +75,12 @@ module Bparity
       def call(value)
         case value
         when String then canonical_string(value)
+        when Float then canonical_float(value)
         when Array then value.map { |item| call(item) }
-        when Hash then value.to_h { |key, item| [key, call(item)] }
+        when Hash
+          return { "$time" => @config[:freeze_time] } if value.key?("$time") && @config[:freeze_time]
+
+          value.to_h { |key, item| [key, call(item)] }
         else value
         end
       end
@@ -81,6 +91,77 @@ module Bparity
         return value unless @config[:uuid_placeholder]
 
         value.gsub(UUID) { |id| @ids[id] ||= "<ID:#{@ids.length}>" }
+      end
+
+      def canonical_float(value)
+        tolerance = @config[:float_tolerance]
+        tolerance ? (value / tolerance).round * tolerance : value
+      end
+    end
+
+    module CoverageTracker
+      module_function
+
+      def running? = Coverage.running?
+
+      def start
+        return if Coverage.running?
+
+        Coverage.start(lines: true, branches: true)
+      end
+
+      def finish(path)
+        return unless Coverage.running?
+
+        root = "#{File.expand_path(Dir.pwd)}#{File::SEPARATOR}"
+        files = Coverage.result.filter_map do |file, data|
+          next unless File.expand_path(file).start_with?(root)
+
+          branches = data.fetch(:branches, {}).flat_map do |_base, children|
+            children.map do |location, count|
+              { "type" => location[0].to_s, "start_line" => location[2],
+                "end_line" => location[4], "count" => count }
+            end
+          end
+          { "path" => file, "lines" => data.fetch(:lines, []), "branches" => branches }
+        end
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, JSON.pretty_generate("files" => files))
+      end
+
+      def gaps(path)
+        JSON.parse(File.read(path)).fetch("files").flat_map do |file|
+          file.fetch("branches").filter_map do |branch|
+            next unless branch.fetch("count").zero?
+
+            { "kind" => "uncovered_branch", "location" => "#{file.fetch('path')}:#{branch.fetch('start_line')}" }
+          end
+        end
+      rescue Errno::ENOENT
+        raise ConfigurationError, "Cannot read coverage file #{path}. Run `bparity record` first."
+      rescue JSON::ParserError, KeyError
+        raise ConfigurationError, "Coverage file #{path} is invalid. Run `bparity record` again."
+      end
+    end
+
+    module MinitestDriver
+      module_function
+
+      def install!
+        return if Minitest::Test < TestHook
+
+        Minitest::Test.prepend(TestHook)
+      end
+
+      module TestHook
+        def run
+          location = method(name).source_location&.join(":")
+          Context.provenance = { "example_id" => "#{self.class}##{name}", "description" => name,
+                                 "location" => location }
+          super
+        ensure
+          Context.provenance = nil
+        end
       end
     end
 
@@ -194,6 +275,7 @@ module Bparity
 
       def provenance
         example = defined?(RSpec) && RSpec.respond_to?(:current_example) && RSpec.current_example
+        return Context.provenance if Context.provenance
         unless example
           return { "example_id" => nil, "description" => nil,
                    "location" => caller_locations(4, 1).first.to_s }

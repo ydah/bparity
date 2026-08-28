@@ -15,6 +15,8 @@ module Bparity
                     when "Integer" then integers
                     when "String" then strings
                     when "Symbol" then (@observed.grep(Symbol) + @alphabet.map(&:to_sym)).uniq
+                    when "Array" then arrays(inferred_array_type)
+                    when "Hash" then hashes(*inferred_hash_types)
                     when "NilClass", "nil" then [nil]
                     when "TrueClass", "FalseClass", "Boolean" then [false, true]
                     else raise ConfigurationError, "Cannot enumerate #{type}. Add an explicit input domain."
@@ -30,12 +32,33 @@ module Bparity
         (0..@size).flat_map { |length| elements.repeated_permutation(length).to_a }
       end
 
+      def hashes(key_type, value_type)
+        return [{}] if @depth.zero?
+
+        pairs = values(key_type).product(values(value_type))
+        [{}] + (1..@size).flat_map do |length|
+          pairs.combination(length).filter_map do |items|
+            hash = items.to_h
+            hash if hash.length == length
+          end
+        end
+      end
+
       private
 
-      def integers = (-(@size - 1)..(@size - 1)).to_a
+      def integers = (-@size..@size).to_a
 
       def strings
         (0..@size).flat_map { |length| @alphabet.repeated_permutation(length).map(&:join) }
+      end
+
+      def inferred_array_type
+        @observed.grep(Array).flatten.first&.class&.name || "String"
+      end
+
+      def inferred_hash_types
+        pair = @observed.grep(Hash).flat_map(&:to_a).first
+        pair ? pair.map { |item| item.class.name } : %w[String String]
       end
     end
 
@@ -62,6 +85,7 @@ module Bparity
       def run
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         count = 0
+        fallback_count = 0
         counterexample = nil
         complete = true
         each_input do |input|
@@ -70,15 +94,19 @@ module Bparity
             break
           end
           count += 1
-          expected = observe(@old_callable, input, @old_error_mapper)
-          actual = observe(@new_callable, input, @new_error_mapper)
-          differences = @comparator.compare(expected, actual)
-          unless differences.empty?
-            counterexample = { "input" => input, "differences" => differences }
-            break
+          counterexample = compare(input)
+          break if counterexample
+        end
+        if !complete && !counterexample
+          pairwise_inputs.first(@max_cases).each do |input|
+            break if Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= @timebox
+
+            fallback_count += 1
+            counterexample = compare(input)
+            break if counterexample
           end
         end
-        result(count, complete, counterexample)
+        result(count + fallback_count, complete, counterexample, fallback_count)
       end
 
       private
@@ -97,12 +125,36 @@ module Bparity
         { "kind" => "raise", **normalized }
       end
 
-      def result(count, complete, counterexample)
+      def compare(input)
+        expected = observe(@old_callable, input, @old_error_mapper)
+        actual = observe(@new_callable, input, @new_error_mapper)
+        differences = @comparator.compare(expected, actual)
+        { "input" => input, "differences" => differences } unless differences.empty?
+      end
+
+      def pairwise_inputs
+        return @domains.first.map { |value| [value] } if @domains.length == 1
+
+        @domains.each_index.to_a.combination(2).flat_map do |left, right|
+          @domains[left].product(@domains[right]).map do |left_value, right_value|
+            @domains.map.with_index do |domain, index|
+              { left => left_value, right => right_value }.fetch(index, domain.first)
+            end
+          end
+        end.uniq
+      end
+
+      def result(count, complete, counterexample, fallback_count)
         verdict = if counterexample then :difference_found
                   elsif complete then :no_difference_found
                   else :inconclusive
                   end
-        details = complete ? {} : { "fallback" => "case limit or timebox reached; exhaustive claim withheld" }
+        details = if complete
+                    {}
+                  else
+                    { "fallback" => "pairwise", "fallback_cases" => fallback_count,
+                      "note" => "case limit or timebox reached; exhaustive claim withheld" }
+                  end
         Result.new(level: :f2, verdict:,
                    scope: Scope.new(size: @size, depth: @depth, cases: count, exhaustive: complete,
                                     timebox: @timebox),

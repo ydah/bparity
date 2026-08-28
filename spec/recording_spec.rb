@@ -62,4 +62,27 @@ RSpec.describe Bparity::Recording do
       expect(record.dig("outcome", "value")).to eq("HELLO!")
     end
   end
+
+  it "turns zero-count coverage branches into specification gaps" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "coverage.json")
+      File.write(path, JSON.generate("files" => [{ "path" => "legacy.rb", "branches" => [
+                                       { "type" => "then", "start_line" => 8, "end_line" => 9, "count" => 0 },
+                                       { "type" => "else", "start_line" => 10, "end_line" => 11, "count" => 1 }
+                                     ] }]))
+
+      gaps = [{ "kind" => "uncovered_branch", "location" => "legacy.rb:8" }]
+      expect(described_class::CoverageTracker.gaps(path)).to eq(gaps)
+    end
+  end
+
+  it "normalizes configured time, random identifiers, and floats" do
+    canonicalizer = described_class::Canonicalizer.new(
+      freeze_time: "2020-01-01T00:00:00Z", uuid_placeholder: true, float_tolerance: 0.1
+    )
+    uuid = "550e8400-e29b-41d4-a716-446655440000"
+
+    expected = [{ "$time" => "2020-01-01T00:00:00Z" }, "<ID:0>", 1.0]
+    expect(canonicalizer.call([{ "$time" => "2026-01-01T00:00:00Z" }, uuid, 1.04])).to eq(expected)
+  end
 end

@@ -246,10 +246,15 @@ module Bparity
 
       def outputs(lts, sequence)
         state = lts.initial
-        sequence.map do |input|
+        sequence.each_with_object([]) do |input, outputs|
           transition = lts.step(state, input)
+          unless transition
+            outputs << LtsEncoding.output("kind" => "missing_transition", "input" => input)
+            break
+          end
+
           state = transition.to
-          transition.output
+          outputs << transition.output
         end
       end
       private_class_method :outputs

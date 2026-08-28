@@ -11,6 +11,7 @@ require_relative "bparity/synthesis"
 require_relative "bparity/verification"
 require_relative "bparity/reporting"
 require_relative "bparity/formal"
+require_relative "bparity/adequacy"
 
 module Bparity
   class << self

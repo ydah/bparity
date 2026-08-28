@@ -72,9 +72,20 @@ module Bparity
         ].max)
           return []
         end
+        return refinement_diff(expected, actual, path) if @mode == :refinement && expected.is_a?(Hash)
         return Differ.call(expected, actual, path) unless expected.is_a?(Hash) && actual.is_a?(Hash)
 
         Differ.call(expected, actual, path)
+      end
+
+      def refinement_diff(expected, actual, path)
+        return Differ.call(expected, actual, path) unless actual.is_a?(Hash)
+
+        expected.flat_map do |key, value|
+          next [{ "path" => "#{path}.#{key}", "expected" => value, "actual" => "<missing>" }] unless actual.key?(key)
+
+          compare_values(value, actual[key], "#{path}.#{key}")
+        end
       end
     end
 
@@ -98,14 +109,20 @@ module Bparity
           raise ConfigurationError, "Adapter subject #{spec_subject['name']} is missing. Add it to the adapter file."
         end
 
-        spec_subject.fetch("operations").flat_map do |operation|
-          operation.fetch("examples").map { |example| replay_example(binding, operation, example) }
+        subjects = {}
+        calls = spec_subject.fetch("operations").flat_map do |operation|
+          operation.fetch("examples").map { |example| [operation, example] }
+        end
+        calls.sort_by { |_operation, example| example.fetch("id") }.map do |operation, example|
+          provenance = example.dig("provenance", "example_id") || example.fetch("id")
+          subject = subjects[provenance] ||= binding.build({})
+          replay_example(binding, subject, operation, example)
         end
       end
 
-      def replay_example(binding, operation_spec, example)
+      def replay_example(binding, subject, operation_spec, example)
         waiver = @adapter.waivers[example["id"]]
-        actual = invoke(binding, operation_spec["name"], example.fetch("given"))
+        actual = invoke(binding, subject, operation_spec["name"], example.fetch("given"))
         differences = @comparator.compare(example.fetch("expect"), actual)
         status = if differences.empty? then :pass
                  elsif waiver then :waived
@@ -115,8 +132,7 @@ module Bparity
                    differences:, provenance: example["provenance"])
       end
 
-      def invoke(binding, operation_name, given)
-        subject = binding.build({})
+      def invoke(binding, subject, operation_name, given)
         operation = binding.operations[operation_name] || Adapter::Operation.new(name: operation_name)
         args = Recording::Serializer.load(given.fetch("args", []))
         kwargs = Recording::Serializer.load(given.fetch("kwargs", {}))
@@ -132,7 +148,9 @@ module Bparity
         }
       rescue StandardError => e
         mapped = stringify(operation&.map_error(e) || { class: e.class.name, message: e.message })
-        { "outcome" => { "kind" => "raise", **mapped }, "post_state" => nil,
+        mapped["cause"] = e.cause&.class&.name unless mapped.key?("cause")
+        post_state = Recording::Serializer.dump(binding.state_projection&.call(subject))
+        { "outcome" => { "kind" => "raise", **mapped }, "post_state" => post_state,
           "yields" => yields || [], "external_calls" => [], "mutated_args" => [] }
       end
 

@@ -2,6 +2,17 @@
 
 `bparity` captures the observable behavior of a legacy Ruby API, stores it as a portable specification bundle, and checks a structurally different replacement through a small adapter. The legacy dependency is not needed during verification.
 
+## Preserve the legacy environment first
+
+If the old dependency can still run, preserve it before installing anything else:
+
+```bash
+bundle package --all
+bundle exec bparity init --timecapsule
+```
+
+Commit `vendor/cache`, the generated time-capsule Dockerfile, the behavior corpus, and the Specification Bundle. The replacement-side verifier does not load the legacy dependency.
+
 ## Installation
 
 ```bash
@@ -9,6 +20,12 @@ bundle add bparity
 ```
 
 ## Usage
+
+Get an initial boundary proposal from calls made by an exercise script. Discovery observes Ruby calls only; C calls are intentionally excluded:
+
+```bash
+bundle exec bparity discover --require lib/legacy.rb --target Legacy::Slugifier script/exercise_legacy.rb
+```
 
 Create `.bparity/boundary.rb` in the legacy environment:
 
@@ -25,7 +42,8 @@ Record and synthesize a checked specification bundle while the legacy environmen
 
 ```bash
 bundle exec bparity record --require lib/legacy.rb
-bundle exec bparity synthesize --tests 'spec/**/*_spec.rb' --source 'lib/**/*.rb'
+bundle exec bparity synthesize --coverage .bparity/coverage.json \
+  --tests 'spec/**/*_spec.rb' --source 'lib/**/*.rb'
 ```
 
 Commit `.bparity/spec_bundle.yml`. In the replacement environment, map its abstract operations to the new API:
@@ -49,6 +67,12 @@ bundle exec bparity verify --require lib/new_slug_service.rb
 
 Reports support `markdown`, `json`, `junit`, and `html`. A changed bundle checksum is rejected; intentional incompatibilities must be declared with `waive` in the adapter.
 
+Generate an adapter skeleton when the bundle is ready:
+
+```bash
+bundle exec bparity init --from-spec .bparity/spec_bundle.yml
+```
+
 Run a bounded exhaustive comparison while both implementations are available:
 
 ```bash
@@ -67,13 +91,35 @@ bundle exec bparity prove --level f3 --equivalence trace \
 
 F3 reports both model sizes, the learned alphabet, whether exploration was exact, and the shortest distinguishing sequence. `--counterexample-out spec/f3_counterexample_spec.rb` writes that sequence as a regression example. The claim applies only to the projected models.
 
-## Time capsule
+For an explicitly selected pure Ruby fragment, F4 translates both methods to SMT-LIB 2 and invokes Z3:
 
-Run `bparity init --timecapsule`, vendor endangered gems with `bundle package --all`, and build the generated Dockerfile. Keep the corpus and specification bundle in version control so verification remains possible after the legacy runtime disappears.
+```bash
+bundle exec bparity prove --level f4 --solver z3 --validate-translation \
+  --old-source lib/legacy_math.rb --old-method double \
+  --new-source lib/new_math.rb --new-method twice --types Integer \
+  --require lib/legacy_math.rb --require lib/new_math.rb
+```
+
+Translation validation is mandatory. Unsupported Ruby, a translation mismatch, a missing Z3 executable, `unknown`, and solver failures all produce `inconclusive`, never PASS. The implemented fragment covers pure Integer/Boolean/String expressions and conditionals.
+
+Run the five-point adequacy assessment, optionally with the soft `mutant` integration:
+
+```bash
+bundle exec bparity adequacy --require lib/replacement.rb
+bundle exec bparity adequacy --require lib/replacement.rb --mutant
+```
 
 ## Assurance limits
 
-A successful replay means no difference was found for the recorded examples (F0). It does not prove complete program equivalence. Formal checks always report their bounded scope, assumptions, and unverified areas; solver `unknown` and timeouts are inconclusive, never PASS.
+A successful replay means no difference was found for the recorded examples (F0). It does not prove complete program equivalence. Formal checks always report their bounded scope, assumptions, and unverified areas; solver `unknown` and timeouts are inconclusive, never PASS. See [Formal assurance limits](docs/formal_assurance_limits.md).
+
+## Reproduce the fixtures
+
+The acceptance suite records, synthesizes, and verifies all five scenarios. Each has a structurally different correct replacement and an intentionally broken replacement:
+
+```bash
+bundle exec rspec spec/acceptance_spec.rb
+```
 
 ## Development
 
