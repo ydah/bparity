@@ -80,6 +80,12 @@ RSpec.describe Bparity::Formal::LTS do
     expect(sequences).to include(%w[#open #close])
   end
 
+  it "uses an explicit exception output label" do
+    label = Bparity::Formal::LtsEncoding.output("kind" => "raise", "class" => "ArgumentError",
+                                                "message" => "invalid")
+    expect(label).to start_with("!ArgumentError:")
+  end
+
   it "turns a distinguishing sequence into a runnable RSpec regression" do
     source = Bparity::Formal::CounterexampleRSpec.call(lts: old_lts, sequence: %w[#open #close],
                                                        subject_name: "Client")

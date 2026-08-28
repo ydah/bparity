@@ -62,4 +62,14 @@ RSpec.describe Bparity::SpecBundle do
     expect { described_class::Validator.validate!(malformed_lts, verify_checksum: false) }
       .to raise_error(Bparity::InvalidBundleError, /each LTS transition needs/)
   end
+
+  it "rejects malformed contracts" do
+    malformed_contract = {
+      "spec_bundle_version" => 2,
+      "subjects" => [{ "name" => "Value", "operations" => [{ "name" => "#call", "examples" => [],
+                                                             "invariants" => [{}] }] }]
+    }
+    expect { described_class::Validator.validate!(malformed_contract, verify_checksum: false) }
+      .to raise_error(Bparity::InvalidBundleError, /entry needs a non-empty ID and expression/)
+  end
 end

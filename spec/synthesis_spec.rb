@@ -103,6 +103,12 @@ RSpec.describe Bparity::Synthesis do
     expect(bundle["canonicalization"]).to eq("freeze_time" => "2020-01-01T00:00:00Z", "random_seed" => 42)
   end
 
+  it "declares the complete H1 through H7 assumption catalog" do
+    bundle = described_class::Synthesizer.new(records: [{ "subject" => "Value", "operation" => "#call",
+                                                          "outcome" => { "kind" => "return", "value" => 1 } }]).call
+    expect(bundle.fetch("verification_assumptions").map { |item| item.fetch("id") }).to eq(%w[H1 H2 H3 H4 H5 H6 H7])
+  end
+
   it "keeps observed parameter values JSON-safe in a persisted bundle" do
     records = [{ "id" => "bc-1", "subject" => "Legacy::Value", "operation" => "#call",
                  "args" => [{ "$symbol" => "ok" }], "outcome" => { "kind" => "return", "value" => true } }]

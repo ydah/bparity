@@ -108,14 +108,41 @@ module Bparity
         %w[params preconditions postconditions invariants].each do |field|
           invalid!("operation #{field} must be an array") if operation.key?(field) && !operation[field].is_a?(Array)
         end
-        operation.fetch("params", []).each do |param|
+        validate_parameters!(operation.fetch("params", []))
+        validate_contracts!(operation)
+        operation.fetch("examples").each { |example| validate_example!(example, ids) }
+      end
+      private_class_method :validate_operation!
+
+      def validate_parameters!(params)
+        params.each do |param|
           invalid!("each operation parameter needs a name, types, and observed_values") unless
             param.is_a?(Hash) && present?(param["name"]) && param["types"].is_a?(Array) &&
             param["observed_values"].is_a?(Array)
         end
-        operation.fetch("examples").each { |example| validate_example!(example, ids) }
       end
-      private_class_method :validate_operation!
+      private_class_method :validate_parameters!
+
+      def validate_contracts!(operation)
+        ids = %w[preconditions postconditions invariants].flat_map do |field|
+          operation.fetch(field, []).map { |contract| validate_contract!(contract, field) }
+        end
+        invalid!("contract IDs must be unique within #{operation['name']}") unless unique?(ids)
+      end
+      private_class_method :validate_contracts!
+
+      def validate_contract!(contract, field)
+        invalid!("each #{field} entry needs a non-empty ID and expression") unless
+          contract.is_a?(Hash) && present?(contract["id"]) && present?(contract["expr"])
+        if contract["provenance_level"] && !PROVENANCE_LEVELS.include?(contract["provenance_level"])
+          invalid!("contract #{contract['id']} has an invalid provenance level")
+        end
+        if contract["formal_level"] && !FORMAL_LEVELS.include?(contract["formal_level"])
+          invalid!("contract #{contract['id']} has an invalid formal level")
+        end
+        contract["id"]
+      end
+      private_class_method :validate_contract!
 
       def validate_example!(example, ids)
         required = %w[id provenance_level formal_level provenance given expect]

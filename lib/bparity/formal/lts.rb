@@ -8,6 +8,10 @@ module Bparity
       module_function
 
       def output(outcome)
+        if outcome.is_a?(Hash) && outcome["kind"] == "raise"
+          return "!#{outcome['class']}:#{JSON.generate(normalize(outcome.except('kind', 'class')))}"
+        end
+
         JSON.generate(normalize(outcome))
       end
 

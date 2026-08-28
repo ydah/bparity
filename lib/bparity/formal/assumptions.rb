@@ -5,6 +5,54 @@ require "prism"
 module Bparity
   module Formal
     module Assumptions
+      module RuntimeMonitor
+        THREAD_KEY = :bparity_assumption_monitor
+
+        module Hook
+          def method_added(name)
+            RuntimeMonitor.record(self, "method #{name} was redefined")
+            super
+          end
+
+          def prepend(*modules)
+            RuntimeMonitor.record(self, "module #{modules.map(&:name).join(', ')} was prepended")
+            super
+          end
+        end
+
+        module SingletonHook
+          def singleton_method_added(name)
+            RuntimeMonitor.record(singleton_class, "singleton method #{name} was redefined")
+            super
+          end
+        end
+
+        module_function
+
+        def capture(classes)
+          install!
+          previous = Thread.current[THREAD_KEY]
+          context = Thread.current[THREAD_KEY] = { classes:, violations: [] }
+          [yield, context.fetch(:violations)]
+        ensure
+          Thread.current[THREAD_KEY] = previous
+        end
+
+        def record(target, change)
+          context = Thread.current[THREAD_KEY]
+          return unless context&.fetch(:classes)&.include?(target)
+
+          context.fetch(:violations) << "H1: #{target.name || target.inspect} #{change} during verification"
+        end
+
+        def install!
+          return if Module.ancestors.include?(Hook)
+
+          Module.prepend(Hook)
+          Object.prepend(SingletonHook)
+        end
+      end
+
       CATALOG = [
         { id: :h1, name: "world_freeze", enforcement: "runtime snapshot" },
         { id: :h2, name: "dynamic_methods_declared", enforcement: "discovery" },
@@ -20,11 +68,12 @@ module Bparity
           @classes = classes
         end
 
-        def check
+        def check(&)
+          RuntimeMonitor.install!
           before = fingerprint
-          value = yield
-          violations = before == fingerprint ? [] : ["H1: a target class changed during verification"]
-          [value, violations]
+          value, violations = RuntimeMonitor.capture(@classes, &)
+          violations << "H1: a target class changed during verification" unless before == fingerprint
+          [value, violations.uniq]
         end
 
         private

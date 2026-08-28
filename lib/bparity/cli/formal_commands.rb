@@ -88,12 +88,13 @@ module Bparity
     def run_f2(bundle, adapter, options)
       spec_subject, operation_spec = select_formal_operation(bundle, options)
       binding, operation = formal_binding(adapter, spec_subject, operation_spec)
-      old_class = Bparity.constantize(spec_subject.fetch("old_class"))
+      old_class = legacy_class(spec_subject)
       domains = f2_domains(operation_spec, options)
       method_name = operation_spec.fetch("name").delete_prefix("#")
-      old_callable = ->(*args) { old_class.new.public_send(method_name, *args) }
+      validate_legacy_operation!(old_class, method_name) if old_class
+      old_callable = ->(*args) { old_class.new.public_send(method_name, *args) } if old_class
       new_callable = ->(*args) { operation.invoke(binding.build({}), args, {}) }
-      runner = build_f2_runner(old_callable, new_callable, domains, operation, options)
+      runner = build_f2_runner(old_callable, new_callable, domains, operation, operation_spec, options)
       violations = f2_static_violations(old_class, method_name, operation)
       unless violations.empty?
         return Formal::Result.new(level: :f2, verdict: :inconclusive,
@@ -105,7 +106,9 @@ module Bparity
       end
       target = binding.build({})
       monitored_class = target.is_a?(Module) ? target.singleton_class : target.class
-      result, violations = Formal::Assumptions::WorldFreeze.new([old_class, monitored_class]).check { runner.run }
+      result, violations = Formal::Assumptions::WorldFreeze.new([old_class, monitored_class].compact).check do
+        runner.run
+      end
       if violations.empty?
         write_f2_counterexample(result, options, spec_subject, operation_spec)
         return result
@@ -116,9 +119,31 @@ module Bparity
                          details: { "assumption_violations" => violations })
     end
 
+    def legacy_class(subject)
+      Bparity.constantize(subject.fetch("old_class"))
+    rescue ConfigurationError => e
+      raise unless e.message.start_with?("Cannot find ")
+
+      nil
+    end
+
+    def validate_legacy_operation!(old_class, method_name)
+      unless old_class.public_method_defined?(method_name)
+        raise ConfigurationError,
+              "Legacy class #{old_class} has no public method #{method_name}. Fix the Spec Bundle target."
+      end
+      old_class.new
+    rescue ConfigurationError
+      raise
+    rescue StandardError => e
+      raise ConfigurationError,
+            "Legacy class #{old_class} cannot be constructed without arguments: #{e.message}. " \
+            "Use contract-only F2 or record a construct mapping."
+    end
+
     def f2_static_violations(old_class, method_name, operation)
-      paths = [old_class.instance_method(method_name).source_location&.first,
-               operation.invoker&.source_location&.first].compact.uniq
+      old_source = old_class.instance_method(method_name).source_location&.first if old_class
+      paths = [old_source, operation.invoker&.source_location&.first].compact.uniq
       Formal::Assumptions::DynamicCodeDetector.new.scan(paths)
     end
 
@@ -132,17 +157,22 @@ module Bparity
     end
 
     def f2_domains(operation_spec, options)
+      limit = options.fetch(:max_cases, Formal::ExhaustiveRunner::DEFAULT_MAX_CASES)
       operation_spec.fetch("params", []).map do |param|
         observed = param.fetch("observed_values", []).map { |value| Recording::Serializer.load(value) }
         alphabet = observed.grep(String).flat_map(&:chars).uniq.first(8)
         enumerator = Formal::ValueEnumerator.new(size: options[:size], depth: options[:depth],
-                                                 alphabet: alphabet.empty? ? %w[a b] : alphabet, observed:)
+                                                 alphabet: alphabet.empty? ? %w[a b] : alphabet, observed:,
+                                                 limit:)
         types = param.fetch("types", [])
         if types.empty?
           raise ConfigurationError,
                 "F2 parameter #{param['name']} has no inferred type. Record values or add an explicit input domain."
         end
-        (types.flat_map { |type| enumerator.values(type) } + [nil]).uniq
+        type_domains = types.map { |type| enumerator.values(type) }
+        values = (type_domains.flat_map(&:to_a) + [nil]).uniq
+        truncated = type_domains.any?(&:truncated) || values.length > limit
+        Formal::Domain.new(values.first(limit), truncated:)
       end
     end
 
@@ -180,9 +210,11 @@ module Bparity
       [binding, mapped]
     end
 
-    def build_f2_runner(old_callable, new_callable, domains, operation, options)
+    def build_f2_runner(old_callable, new_callable, domains, operation, operation_spec, options)
+      contracts = operation_spec.fetch("postconditions", []) + operation_spec.fetch("invariants", [])
       Formal::ExhaustiveRunner.new(old_callable:, new_callable:, domains:, size: options[:size],
                                    depth: options[:depth], assumptions: %i[h1 h3 h7],
+                                   contracts:, preconditions: operation_spec.fetch("preconditions", []),
                                    max_cases: options[:max_cases], timebox: options[:timebox],
                                    new_error_mapper: operation.method(:map_error))
     end

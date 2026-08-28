@@ -39,7 +39,13 @@ module Bparity
         end
 
         case value
-        when nil, true, false, String, Integer then value
+        when nil, true, false, Integer then value
+        when String
+          if value.valid_encoding?
+            value
+          else
+            { "$string_bytes" => [value.b].pack("m0"), "$encoding" => value.encoding.name }
+          end
         when Float then value.finite? ? value : { "$float" => value.to_s }
         when Symbol then { "$symbol" => value.to_s }
         when Time then { "$time" => value.utc.iso8601(9) }
@@ -59,6 +65,9 @@ module Bparity
         return value.map { |item| load(item) } if value.is_a?(Array)
         return value unless value.is_a?(Hash)
         return value["$symbol"].to_sym if value.key?("$symbol")
+        if value.key?("$string_bytes")
+          return value.fetch("$string_bytes").unpack1("m0").force_encoding(value.fetch("$encoding"))
+        end
         return Time.iso8601(value["$time"]) if value.key?("$time")
         return Float(value["$float"]) if value.key?("$float")
         return value["$hash"].to_h { |key, item| [load(key), load(item)] } if value.key?("$hash")

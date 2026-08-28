@@ -43,6 +43,26 @@ RSpec.describe Bparity::Formal do
       expect(violations).to include(/H1/)
     end
 
+    it "detects a method that is changed and restored during verification" do
+      target = Class.new { def value = 1 }
+      original = target.instance_method(:value)
+      _value, violations = described_class::WorldFreeze.new([target]).check do
+        target.class_eval { def value = 2 }
+        target.define_method(:value, original)
+      end
+      expect(violations).to include(/H1/)
+    end
+
+    it "detects a singleton method that is changed and restored during verification" do
+      target = Class.new { def self.value = 1 }
+      original = target.method(:value)
+      _value, violations = described_class::WorldFreeze.new([target.singleton_class]).check do
+        target.define_singleton_method(:value) { 2 }
+        target.define_singleton_method(:value, original)
+      end
+      expect(violations).to include(/H1/)
+    end
+
     it "detects eval and dynamic send with Prism" do
       Dir.mktmpdir do |dir|
         path = File.join(dir, "dynamic.rb")
@@ -57,6 +77,11 @@ RSpec.describe Bparity::Formal do
     it "enumerates every string up to the requested size" do
       values = described_class.new(size: 2, depth: 1, alphabet: %w[a b]).values("String")
       expect(values).to contain_exactly("", "a", "b", "aa", "ab", "ba", "bb")
+    end
+
+    it "bounds domain construction and marks the result as truncated" do
+      values = described_class.new(size: 8, depth: 1, alphabet: %w[a b c], limit: 10).values("String")
+      expect(values).to have_attributes(length: 10, truncated: true)
     end
 
     it "enumerates bounded arrays and hashes from observed element types" do
@@ -82,6 +107,17 @@ RSpec.describe Bparity::Formal do
     end
   end
 
+  describe Bparity::Formal::InputGenerator do
+    it "adds unseen large and invalidly encoded boundary values" do
+      integers = described_class.new(size: 1, depth: 1).values("Integer")
+      strings = described_class.new(size: 1, depth: 1).values("String")
+
+      expect(integers).to include(2**62, -(2**62))
+      expect(strings).to include(" ")
+      expect(strings).to include(satisfy { |value| value.is_a?(String) && !value.valid_encoding? })
+    end
+  end
+
   describe Bparity::Formal::ExhaustiveRunner do
     it "reports the bounded universal scope when all cases match" do
       result = described_class.new(old_callable: ->(value) { value * 2 }, new_callable: ->(value) { value + value },
@@ -96,7 +132,8 @@ RSpec.describe Bparity::Formal do
       expect(result.to_h).to include("verdict" => "difference_found",
                                      "counterexample" => include("input" => [0]),
                                      "scope" => include("exhaustive" => false),
-                                     "details" => include("domains" => [{ "count" => 2, "sample" => [0, 1] }]))
+                                     "details" => include("domains" => [include("count" => 2,
+                                                                                "sample" => [0, 1])]))
     end
 
     it "is inconclusive rather than exhaustive when the case limit is reached" do
@@ -120,6 +157,32 @@ RSpec.describe Bparity::Formal do
       expect(result.scope.cases).to eq(4)
       expect(calls).to eq(8)
     end
+
+    it "checks declared contracts when the legacy implementation is unavailable" do
+      result = described_class.new(new_callable: ->(value) { value }, domains: [[0, 1]], size: 1, depth: 1,
+                                   assumptions: %i[h1],
+                                   contracts: [{ "id" => "positive", "expr" => "return > 0" }]).run
+      expect(result.to_h).to include("verdict" => "difference_found",
+                                     "counterexample" => include("input" => [0], "violations" => [include(
+                                       "id" => "positive"
+                                     )]))
+    end
+
+    it "filters precondition violations without making a vacuous exhaustive claim" do
+      result = described_class.new(new_callable: ->(value) { value }, domains: [[nil]], size: 1, depth: 1,
+                                   assumptions: %i[h1], contracts: [{ "id" => "present", "expr" => "return != nil" }],
+                                   preconditions: [{ "id" => "input", "expr" => "args[0] != nil" }]).run
+      expect(result.to_h).to include("verdict" => "inconclusive", "scope" => include("cases" => 0),
+                                     "details" => include("filtered_by_preconditions" => 1))
+    end
+
+    it "never reports an exhaustive result for a truncated input domain" do
+      domain = Bparity::Formal::Domain.new([0, 1], truncated: true)
+      result = described_class.new(old_callable: ->(value) { value }, new_callable: ->(value) { value },
+                                   domains: [domain], size: 10, depth: 1, assumptions: %i[h1]).run
+      expect(result.to_h).to include("verdict" => "inconclusive", "scope" => include("exhaustive" => false),
+                                     "details" => include("domains" => [include("truncated" => true)]))
+    end
   end
 
   describe Bparity::Formal::PropertyRunner do
@@ -129,6 +192,13 @@ RSpec.describe Bparity::Formal do
                                    inputs: [["long"]]).run
 
       expect(result["input"]).to eq(["long"])
+    end
+
+    it "reports replacement exceptions instead of silently skipping the input" do
+      result = described_class.new(callable: ->(_value) { raise "broken" },
+                                   invariants: [{ "id" => "present", "expr" => "return != nil" }],
+                                   inputs: [[1]]).run
+      expect(result).to include("input" => [0], "violations" => [include("id" => "execution", "error" => "broken")])
     end
   end
 

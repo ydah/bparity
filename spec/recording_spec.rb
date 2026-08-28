@@ -36,6 +36,14 @@ RSpec.describe Bparity::Recording do
     expect(described_class::Serializer.load(described_class::Serializer.dump(value))).to eq(value)
   end
 
+  it "round-trips invalidly encoded strings through JSON-safe bytes" do
+    value = "\xFF".b.force_encoding(Encoding::UTF_8)
+    serialized = described_class::Serializer.dump(value)
+    expect { JSON.generate(serialized) }.not_to raise_error
+    expect(described_class::Serializer.load(serialized)).to have_attributes(bytes: value.bytes,
+                                                                            encoding: Encoding::UTF_8)
+  end
+
   it "reconstructs user-defined objects with their recorded state" do
     stub_const("RecordedPoint", Class.new do
       attr_reader :x

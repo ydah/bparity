@@ -88,6 +88,7 @@ bundle exec bparity prove --level f2 --scope size=3,depth=2 \
 ```
 
 The result uses `no_difference_found`, `difference_found`, or `inconclusive`; it always includes the enumerated case count, scope, assumptions, and excluded inputs.
+If the legacy class is unavailable, F2 checks the replacement against declared postconditions and invariants instead. It refuses to run when neither legacy execution nor contracts are available. Domain generation is bounded by `--max-cases`; any truncation is reported as `inconclusive`, never exhaustive.
 
 For a stateful subject with `state` projections in both the boundary and adapter, compare learned finite models:
 

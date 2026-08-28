@@ -307,7 +307,11 @@ module Bparity
       MAX_EXAMPLES_PER_OPERATION = 50
       ASSUMPTIONS = [
         { "id" => "H1", "name" => "world_freeze", "enforced_by" => "runtime monitor" },
+        { "id" => "H2", "name" => "dynamic_methods_declared", "enforced_by" => "discovery" },
         { "id" => "H3", "name" => "no_eval", "enforced_by" => "Prism static detection" },
+        { "id" => "H4", "name" => "runtime_identity_unobserved", "enforced_by" => "serializer" },
+        { "id" => "H5", "name" => "ieee_754", "enforced_by" => "declaration only" },
+        { "id" => "H6", "name" => "exceptions_are_outputs", "enforced_by" => "recorder" },
         { "id" => "H7", "name" => "single_thread", "enforced_by" => "declaration only" }
       ].freeze
 

@@ -6,7 +6,7 @@
 
 - F0 checks only recorded calls. Unrecorded inputs and operation sequences remain unverified.
 - F1 executes declared first-order contracts. A passing result applies only to executed paths.
-- F2 enumerates every value in the reported finite domain. Case or time limits make the result `inconclusive`; they are never described as exhaustive.
+- F2 enumerates every value in the reported finite domain. Case, time, or domain-construction limits make the result `inconclusive`; they are never described as exhaustive. When the legacy implementation is unavailable, the claim is limited to the declared postconditions and invariants.
 - F3 compares projected finite-state models. The report includes both model sizes, the learned alphabet, whether exploration completed, and a reminder that this is a model claim rather than a whole-implementation claim.
 - F4 applies only to the declared pure fragment. It requires bounded translation validation before Z3 is consulted. Unsupported Ruby, translation disagreement, solver absence, timeout, or `unknown` invalidates the F4 claim.
 

@@ -102,6 +102,41 @@ RSpec.describe Bparity::CLI do
     expect(domain.grep(DomainPoint).map(&:x)).to contain_exactly(1, nil)
   end
 
+  it "proves declared F2 contracts without loading the legacy class" do
+    stub_const("ContractReplacement", Class.new { def call(value) = value })
+    bundle = { "subjects" => [{ "name" => "Value", "old_class" => "UnavailableLegacy",
+                                "operations" => [{ "name" => "#call",
+                                                   "params" => [{ "name" => "value", "types" => ["Integer"],
+                                                                  "observed_values" => [0] }],
+                                                   "preconditions" => [{ "id" => "input",
+                                                                         "expr" => "args[0] != nil" }],
+                                                   "invariants" => [{ "id" => "same",
+                                                                      "expr" => "return == args[0]" }],
+                                                   "examples" => [] }] }] }
+    adapter = Bparity.adapter do
+      subject "Value" do
+        construct { ContractReplacement.new }
+        operation("#call")
+      end
+    end
+    options = { subject: "Value", operation: "#call", size: 1, depth: 1, max_cases: 100,
+                timebox: 10 }
+
+    result = described_class.new(out: StringIO.new, err: StringIO.new).send(:run_f2, bundle, adapter, options)
+    expect(result.to_h).to include("verdict" => "no_difference_found",
+                                   "out_of_scope" => include("legacy behavior beyond declared contracts"))
+  end
+
+  it "rejects an unusable legacy construction instead of reporting a behavior difference" do
+    stub_const("NeedsConfiguration", Class.new do
+      def initialize(required); end
+      def call(value) = value
+    end)
+    cli = described_class.new(out: StringIO.new, err: StringIO.new)
+    expect { cli.send(:validate_legacy_operation!, NeedsConfiguration, "call") }
+      .to raise_error(Bparity::ConfigurationError, /cannot be constructed without arguments/)
+  end
+
   it "discovers Ruby calls for an explicit target without C calls" do
     stub_const("DiscoveryTarget", Class.new do
       def called = :ok
