@@ -82,8 +82,22 @@ RSpec.describe Bparity::Formal do
       result = described_class.new(old_callable: ->(value) { value }, new_callable: ->(value) { value },
                                    domains: [[1, 2, 3]], size: 1, depth: 1, assumptions: %i[h1], max_cases: 1).run
       expect(result.to_h).to include("verdict" => "inconclusive",
-                                     "scope" => include("exhaustive" => false),
+                                     "scope" => include("cases" => 1, "exhaustive" => false),
                                      "details" => include("fallback" => "pairwise", "fallback_cases" => 1))
+    end
+
+    it "never exceeds the total case limit during pairwise fallback" do
+      calls = 0
+      callable = lambda do |left, right|
+        calls += 1
+        [left, right]
+      end
+      result = described_class.new(old_callable: callable, new_callable: callable,
+                                   domains: [[1, 2, 3], %w[a b c]], size: 3, depth: 1,
+                                   assumptions: %i[h1], max_cases: 4).run
+
+      expect(result.scope.cases).to eq(4)
+      expect(calls).to eq(8)
     end
   end
 end

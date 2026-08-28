@@ -85,37 +85,32 @@ module Bparity
       def run
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         count = 0
-        fallback_count = 0
         counterexample = nil
-        complete = true
-        each_input do |input|
-          if count >= @max_cases || Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= @timebox
-            complete = false
+        fallback = total_cases > @max_cases
+        inputs = fallback ? pairwise_inputs : exhaustive_inputs
+        timed_out = false
+        inputs.first(@max_cases).each do |input|
+          if Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= @timebox
+            timed_out = true
             break
           end
           count += 1
           counterexample = compare(input)
           break if counterexample
         end
-        if !complete && !counterexample
-          pairwise_inputs.first(@max_cases).each do |input|
-            break if Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= @timebox
-
-            fallback_count += 1
-            counterexample = compare(input)
-            break if counterexample
-          end
-        end
-        result(count + fallback_count, complete, counterexample, fallback_count)
+        complete = !fallback && !timed_out && count == total_cases
+        result(count, complete, counterexample, fallback ? count : 0)
       end
 
       private
 
-      def each_input(&)
-        return yield([]) if @domains.empty?
+      def exhaustive_inputs
+        return [[]].each if @domains.empty?
 
-        @domains.first.product(*@domains.drop(1), &)
+        @domains.first.product(*@domains.drop(1)).each
       end
+
+      def total_cases = @domains.empty? ? 1 : @domains.reduce(1) { |count, domain| count * domain.length }
 
       def observe(callable, input, error_mapper)
         { "kind" => "return", "value" => Recording::Serializer.dump(callable.call(*input)) }
@@ -136,15 +131,22 @@ module Bparity
       end
 
       def pairwise_inputs
-        return @domains.first.map { |value| [value] } if @domains.length == 1
+        return exhaustive_inputs if @domains.length < 2
 
-        @domains.each_index.to_a.combination(2).flat_map do |left, right|
-          @domains[left].product(@domains[right]).map do |left_value, right_value|
-            @domains.map.with_index do |domain, index|
-              { left => left_value, right => right_value }.fetch(index, domain.first)
+        Enumerator.new do |items|
+          seen = {}
+          @domains.each_index.to_a.combination(2).each do |left, right|
+            @domains[left].product(@domains[right]).each do |left_value, right_value|
+              input = @domains.map.with_index do |domain, index|
+                { left => left_value, right => right_value }.fetch(index, domain.first)
+              end
+              next if seen[input]
+
+              seen[input] = true
+              items << input
             end
           end
-        end.uniq
+        end
       end
 
       def result(count, complete, counterexample, fallback_count)
