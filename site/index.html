@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#ffffff">
+    <title>bparity — Change the code. Keep the behavior.</title>
+    <meta name="description" content="Capture legacy Ruby behavior as a portable specification, then verify your replacement implementation. Different APIs. The same observed behavior.">
+    <link rel="canonical" href="https://ydah.github.io/bparity/">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="bparity — Change the code. Keep the behavior.">
+    <meta property="og:description" content="Record the behavior of a legacy Ruby API. Verify its replacement, even after the old dependency is gone.">
+    <meta property="og:url" content="https://ydah.github.io/bparity/">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body class="bg-white font-sans text-slate-900 antialiased">
+    <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:p-4">Skip to content</a>
+
+    <header class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-6 sm:px-10 lg:px-12">
+      <a href="./" aria-label="bparity home" class="flex items-center gap-3 text-2xl font-bold">
+        <img src="./favicon.svg" alt="" width="36" height="36" class="size-9">
+        bparity
+      </a>
+      <nav aria-label="Main navigation" class="flex items-center gap-5 text-sm font-medium sm:gap-8">
+        <a href="#how-it-works" class="py-3 hover:text-blue-700">How it works</a>
+        <a href="https://github.com/ydah/bparity#readme" class="hidden py-3 hover:text-blue-700 sm:block">Docs</a>
+        <a href="https://github.com/ydah/bparity" class="flex items-center gap-2 py-3 hover:text-blue-700">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" class="size-5"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.73 1.16 1.73 1.16 1 1.72 2.63 1.22 3.27.93.1-.73.39-1.22.71-1.5-2.5-.29-5.13-1.25-5.13-5.57 0-1.23.44-2.23 1.16-3.02-.12-.28-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.15a10.8 10.8 0 0 1 5.64 0c2.15-1.46 3.1-1.15 3.1-1.15.61 1.55.23 2.7.11 2.98.72.79 1.16 1.79 1.16 3.02 0 4.33-2.63 5.28-5.14 5.56.4.35.76 1.03.76 2.08v3.1c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section aria-labelledby="hero-title" class="mx-auto max-w-7xl px-6 pb-16 pt-12 sm:px-10 sm:pt-20 lg:px-12">
+        <div class="grid items-end gap-8 lg:grid-cols-12 lg:gap-10">
+          <div class="lg:col-span-7">
+            <p class="mb-5 text-pretty text-sm font-semibold text-blue-700">Behavioral verification for Ruby</p>
+            <h1 id="hero-title" class="text-balance text-5xl font-semibold leading-tight sm:text-6xl lg:text-7xl">Change the code.<br>Keep the behavior.</h1>
+          </div>
+          <div class="pb-2 lg:col-span-5">
+            <p class="max-w-md text-pretty text-lg leading-relaxed text-slate-600">Your legacy code has a lot to teach its replacement. Capture what it does, then check the new implementation against the same behavior.</p>
+            <div class="mt-7 flex flex-wrap items-center gap-5">
+              <a href="#get-started" class="inline-flex min-h-12 items-center justify-center rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-800">Get started</a>
+              <a href="https://github.com/ydah/bparity#quick-start" class="inline-flex min-h-12 items-center text-sm font-semibold underline decoration-slate-300 underline-offset-4 hover:text-blue-700">Read the guide</a>
+            </div>
+          </div>
+        </div>
+
+        <figure class="mt-12 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 sm:mt-16">
+          <figcaption class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-4 text-sm sm:px-8">
+            <span class="font-semibold">Different APIs. One behavioral contract.</span>
+            <span class="text-slate-500">Slugifier example</span>
+          </figcaption>
+          <div class="grid items-stretch md:grid-cols-2">
+            <div class="min-w-0 p-5 sm:p-8 md:border-r md:border-slate-200">
+              <p class="mb-5 flex items-center justify-between gap-4 text-pretty text-sm text-slate-600"><span>Legacy API</span><span class="rounded-full border border-slate-300 px-3 py-1 text-xs">Record once</span></p>
+              <pre tabindex="0" aria-label="Legacy Ruby API example" class="overflow-x-auto text-sm leading-7 sm:text-base"><code><span class="text-slate-500"># An instance method</span>
+slugifier = Legacy::Slugifier.new
+slugifier.call(<span class="text-blue-700">"Hello World"</span>)
+
+<span class="text-slate-500"># =&gt; "hello-world"</span></code></pre>
+            </div>
+            <div class="min-w-0 border-t border-slate-200 bg-white p-5 sm:p-8 md:border-t-0">
+              <p class="mb-5 flex items-center justify-between gap-4 text-pretty text-sm text-slate-600"><span>Replacement API</span><span class="rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-700">Verify independently</span></p>
+              <pre tabindex="0" aria-label="Replacement Ruby API example" class="overflow-x-auto text-sm leading-7 sm:text-base"><code><span class="text-slate-500"># A module. A keyword argument.</span>
+Replacement::Slugs.generate(
+  text: <span class="text-blue-700">"Hello World"</span>
+)
+<span class="text-slate-500"># =&gt; "hello-world"</span></code></pre>
+            </div>
+          </div>
+          <div class="border-t border-slate-200 bg-white px-5 py-5 sm:px-8">
+            <div class="mb-4 flex items-center gap-3 text-sm font-semibold">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-5 shrink-0 text-blue-700"><path d="m5 12 4 4L19 6"/></svg>
+              Same observed results, through an adapter
+            </div>
+            <dl class="grid gap-4 text-sm sm:grid-cols-3 sm:gap-8">
+              <div><dt class="mb-1 font-mono text-xs text-slate-500">"Hello World"</dt><dd class="font-mono">"hello-world"</dd></div>
+              <div><dt class="mb-1 font-mono text-xs text-slate-500">"  Hi!  "</dt><dd class="font-mono">"hi"</dd></div>
+              <div><dt class="mb-1 font-mono text-xs text-slate-500">""</dt><dd class="font-mono">ArgumentError: "blank"</dd></div>
+            </dl>
+          </div>
+        </figure>
+        <div class="mt-5 flex flex-wrap items-center justify-between gap-x-8 gap-y-3 text-sm text-slate-500">
+          <p class="text-pretty">The replacement can change shape. The recorded behavior stays the reference.</p>
+          <p class="text-pretty">Ruby 3.1+ <span aria-hidden="true" class="mx-2 text-slate-300">/</span> MIT licensed</p>
+        </div>
+      </section>
+
+      <section aria-labelledby="capture-title" class="border-y border-slate-200 bg-slate-50">
+        <div class="mx-auto grid max-w-7xl gap-8 px-6 py-12 sm:px-10 lg:grid-cols-12 lg:gap-10 lg:px-12">
+          <h2 id="capture-title" class="text-balance text-2xl font-semibold lg:col-span-4">Behavior is more<br class="hidden lg:block"> than a return value.</h2>
+          <div class="lg:col-span-8">
+            <p class="max-w-2xl text-pretty leading-relaxed text-slate-600">Keep the details that callers depend on, including the ones a happy-path test can miss.</p>
+            <ul class="mt-5 flex flex-wrap gap-2 text-sm font-medium">
+              <li class="rounded-md border border-slate-200 bg-white px-3 py-2">Arguments</li>
+              <li class="rounded-md border border-slate-200 bg-white px-3 py-2">Return values</li>
+              <li class="rounded-md border border-slate-200 bg-white px-3 py-2">Errors</li>
+              <li class="rounded-md border border-slate-200 bg-white px-3 py-2">Yields</li>
+              <li class="rounded-md border border-slate-200 bg-white px-3 py-2">Mutations</li>
+              <li class="rounded-md border border-slate-200 bg-white px-3 py-2">State</li>
+              <li class="rounded-md border border-slate-200 bg-white px-3 py-2">External calls</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="how-it-works" aria-labelledby="workflow-title" class="mx-auto max-w-7xl px-6 py-16 sm:px-10 sm:py-24 lg:px-12">
+        <div class="grid gap-6 lg:grid-cols-2 lg:gap-12">
+          <h2 id="workflow-title" class="text-balance text-4xl font-semibold leading-tight sm:text-5xl">Keep the evidence.<br>Leave the legacy.</h2>
+          <p class="max-w-lg self-end text-pretty text-lg leading-relaxed text-slate-600">Record while the old environment still runs. A portable Specification Bundle becomes the reference for everything that comes next.</p>
+        </div>
+        <ol class="mt-12 grid gap-10 md:grid-cols-3 md:gap-8">
+          <li class="border-t-2 border-blue-700 pt-6">
+            <div class="mb-4 flex items-center gap-3"><span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-semibold tabular-nums text-blue-700">1</span><h3 class="text-balance text-xl font-semibold">Capture the original</h3></div>
+            <p class="text-pretty leading-relaxed text-slate-600">Define the public boundary and run your RSpec or Minitest suite. Combine recorded traces and source evidence into a checked bundle.</p>
+            <p class="mt-5 text-pretty font-mono text-sm text-slate-500">record + synthesize</p>
+          </li>
+          <li class="border-t-2 border-slate-200 pt-6">
+            <div class="mb-4 flex items-center gap-3"><span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold tabular-nums text-slate-600">2</span><h3 class="text-balance text-xl font-semibold">Map the replacement</h3></div>
+            <p class="text-pretty leading-relaxed text-slate-600">Use a small Ruby adapter to connect recorded operations to your new API. Classes, method names, and argument shapes can all change.</p>
+            <p class="mt-5 text-pretty font-mono text-sm text-slate-500">.bparity/adapter.rb</p>
+          </li>
+          <li class="border-t-2 border-slate-200 pt-6">
+            <div class="mb-4 flex items-center gap-3"><span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold tabular-nums text-slate-600">3</span><h3 class="text-balance text-xl font-semibold">Check what changed</h3></div>
+            <p class="text-pretty leading-relaxed text-slate-600">Verify with just the bundle, adapter, and replacement. Inspect differences and declared waivers in Markdown, JSON, JUnit XML, or HTML.</p>
+            <p class="mt-5 text-pretty font-mono text-sm text-slate-500">bparity verify</p>
+          </li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="assurance-title" class="mx-auto max-w-7xl px-6 pb-16 sm:px-10 sm:pb-24 lg:px-12">
+        <div class="grid gap-10 rounded-2xl bg-slate-50 p-6 sm:p-10 lg:grid-cols-12 lg:gap-16">
+          <div class="lg:col-span-5">
+            <h2 id="assurance-title" class="text-balance text-3xl font-semibold leading-tight sm:text-4xl">Know what passed.<br>And what was checked.</h2>
+            <p class="mt-5 text-pretty leading-relaxed text-slate-600">Start with recorded examples. Add property checks, finite-domain exploration, model comparison, or Z3 proofs when the required inputs are available.</p>
+            <p class="mt-4 text-pretty leading-relaxed text-slate-600">Every formal result reports its scope, assumptions, and exclusions. Inconclusive results stay inconclusive.</p>
+            <a href="https://github.com/ydah/bparity/blob/main/docs/formal_assurance_limits.md" class="mt-6 inline-flex min-h-11 items-center text-sm font-semibold text-blue-700 underline underline-offset-4 hover:text-blue-800">Read the assurance limits</a>
+          </div>
+          <dl class="divide-y divide-slate-200 lg:col-span-7">
+            <div class="flex gap-5 pb-4"><dt class="pt-1 text-sm font-semibold tabular-nums text-blue-700">F0</dt><dd><h3 class="text-balance font-semibold">Trace replay</h3><p class="mt-1 text-pretty text-sm leading-relaxed text-slate-600">The recorded examples match.</p></dd></div>
+            <div class="flex gap-5 py-4"><dt class="pt-1 text-sm font-semibold tabular-nums text-blue-700">F1</dt><dd><h3 class="text-balance font-semibold">Contract &amp; property checks</h3><p class="mt-1 text-pretty text-sm leading-relaxed text-slate-600">Executed inputs satisfy declared predicates.</p></dd></div>
+            <div class="flex gap-5 py-4"><dt class="pt-1 text-sm font-semibold tabular-nums text-blue-700">F2</dt><dd><h3 class="text-balance font-semibold">Bounded exhaustive comparison</h3><p class="mt-1 text-pretty text-sm leading-relaxed text-slate-600">No difference within the reported finite domain.</p></dd></div>
+            <div class="flex gap-5 py-4"><dt class="pt-1 text-sm font-semibold tabular-nums text-blue-700">F3</dt><dd><h3 class="text-balance font-semibold">Finite-state model comparison</h3><p class="mt-1 text-pretty text-sm leading-relaxed text-slate-600">The projected learned models conform.</p></dd></div>
+            <div class="flex gap-5 pt-4"><dt class="pt-1 text-sm font-semibold tabular-nums text-blue-700">F4</dt><dd><h3 class="text-balance font-semibold">Translation-validated Z3 proof</h3><p class="mt-1 text-pretty text-sm leading-relaxed text-slate-600">No difference in the supported pure fragment, under reported assumptions.</p></dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section id="get-started" aria-labelledby="start-title" class="border-t border-slate-200">
+        <div class="mx-auto grid max-w-7xl gap-10 px-6 py-16 sm:px-10 sm:py-20 lg:grid-cols-12 lg:gap-16 lg:px-12">
+          <div class="lg:col-span-5">
+            <h2 id="start-title" class="text-balance text-4xl font-semibold leading-tight sm:text-5xl">Give your rewrite<br>a reference point.</h2>
+            <p class="mt-5 max-w-md text-pretty text-lg leading-relaxed text-slate-600">Start in the legacy environment, while its dependencies still work.</p>
+            <a href="https://github.com/ydah/bparity#quick-start" class="mt-7 inline-flex min-h-12 items-center justify-center rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-800">Follow the quick start</a>
+          </div>
+          <div class="min-w-0 lg:col-span-7">
+            <div class="overflow-hidden rounded-xl border border-slate-200">
+              <div class="border-b border-slate-200 bg-slate-50 px-5 py-3 text-sm font-medium">Add to your Gemfile</div>
+              <pre tabindex="0" aria-label="Gemfile installation snippet" class="overflow-x-auto p-5 text-sm leading-7"><code>gem <span class="text-blue-700">"bparity"</span>, github: <span class="text-blue-700">"ydah/bparity"</span>, branch: <span class="text-blue-700">"main"</span></code></pre>
+              <div class="border-y border-slate-200 bg-slate-50 px-5 py-3 text-sm font-medium">Install and preserve the environment</div>
+              <pre tabindex="0" aria-label="Installation and environment preservation commands" class="overflow-x-auto p-5 text-sm leading-7"><code>bundle install
+bundle package --all
+bundle exec bparity init --timecapsule</code></pre>
+            </div>
+            <p class="mt-4 text-pretty text-sm leading-relaxed text-slate-500">Next, define your boundary, record the suite, and map your replacement. The quick start walks through each step.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="border-t border-slate-200">
+      <div class="mx-auto flex max-w-7xl flex-col justify-between gap-6 px-6 py-8 text-sm sm:flex-row sm:items-center sm:px-10 lg:px-12">
+        <p class="text-pretty text-slate-500"><span class="mr-3 font-bold text-slate-900">bparity</span> Built by <a href="https://github.com/ydah" class="underline underline-offset-4 hover:text-blue-700">Yudai Takada</a></p>
+        <nav aria-label="Footer navigation" class="flex flex-wrap gap-6 text-slate-600">
+          <a href="https://github.com/ydah/bparity#readme" class="py-3 hover:text-blue-700">Documentation</a>
+          <a href="https://github.com/ydah/bparity/issues" class="py-3 hover:text-blue-700">Report an issue</a>
+          <a href="https://github.com/ydah/bparity/blob/main/LICENSE.txt" class="py-3 hover:text-blue-700">MIT License</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

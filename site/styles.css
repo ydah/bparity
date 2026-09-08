@@ -1,0 +1,22 @@
+@import "tailwindcss" source(none);
+@source "./index.html";
+
+@theme {
+  --font-sans: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-padding-top: --spacing(8);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-blue-700);
+    outline-offset: 4px;
+  }
+
+  ::selection {
+    background: var(--color-blue-100);
+    color: var(--color-blue-950);
+  }
+}
