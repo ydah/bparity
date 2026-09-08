@@ -247,6 +247,24 @@ bundle exec rspec spec/acceptance_spec.rb
 
 Bug reports and pull requests are welcome at https://github.com/ydah/bparity.
 
+### Landing page
+
+The GitHub Pages site lives in `site/`. Build and preview it locally:
+
+```bash
+cd site
+npm ci
+npm run build
+python3 -m http.server 8000 --directory dist
+```
+
+Open http://localhost:8000. The page is static HTML with compiled Tailwind CSS;
+it does not need JavaScript in the browser.
+
+In the repository's **Settings → Pages**, select **GitHub Actions** as the build
+source. The `GitHub Pages` workflow validates pull requests and deploys site
+changes on `main` to https://ydah.github.io/bparity/. It can also be run manually.
+
 ## License
 
 Released under the [MIT License](https://opensource.org/licenses/MIT).

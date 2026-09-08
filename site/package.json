@@ -1,0 +1,11 @@
+{
+  "name": "bparity-site",
+  "private": true,
+  "scripts": {
+    "build": "mkdir -p dist && cp index.html favicon.svg dist/ && tailwindcss -i styles.css -o dist/styles.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "tailwindcss": "4.3.3"
+  }
+}
